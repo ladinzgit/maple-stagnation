@@ -18,6 +18,7 @@ import pandas as pd
 import requests
 from requests.adapters import HTTPAdapter
 from dotenv import load_dotenv
+from pathlib import Path
 
 sys.stdout.reconfigure(encoding="utf-8")
 load_dotenv()
@@ -30,8 +31,9 @@ _session.mount("https://", HTTPAdapter(pool_connections=60, pool_maxsize=60))
 _session.headers.update({"x-nxopen-api-key": API_KEY})
 
 # ── 설정 ─────────────────────────────────────────────────────────────────────
-INPUT_FILE  = "main_characters.csv"
-OUTPUT_FILE = "features_monthly.csv"
+_DATA_DIR   = Path(__file__).resolve().parent.parent / "data"
+INPUT_FILE  = str(_DATA_DIR / "main_characters.csv")
+OUTPUT_FILE = str(_DATA_DIR / "features_monthly.csv")
 CONCURRENCY = 30
 MAX_RPS     = 400
 

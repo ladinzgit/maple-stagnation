@@ -149,16 +149,19 @@ Nexon OpenAPI 데이터를 활용하여 메이플스토리 **주차 유저**를 
 
 ```bash
 # 의존성 설치
-pip install requests pandas python-dotenv scikit-learn scipy xgboost matplotlib seaborn
+pip install requests pandas python-dotenv scikit-learn scipy xgboost matplotlib seaborn statsmodels
 
 # .env 파일에 API 키 설정
 echo "MAPLE_API_KEY=your_api_key_here" > .env
 
-# 본캐릭터 수집 (main_characters.csv 생성)
-python collect_main_characters.py
+# 본캐릭터 수집 (data/main_characters.csv 생성)
+python scripts/collect_main_characters.py
 
-# 월별 피처 수집 (features_monthly.csv 생성, ~13분 소요)
-python collect_features.py
+# 월별 피처 수집 (data/features_monthly.csv 생성, ~13분 소요)
+python scripts/collect_features.py
+
+# EDA 노트북 실행 (데이터 수집 완료 시 여기서 시작)
+jupyter notebook eda/eda.ipynb
 ```
 
 ---
@@ -167,10 +170,20 @@ python collect_features.py
 
 ```
 maple_parking_detect/
-├── collect_main_characters.py   # 본캐릭터 샘플링 (층화 랜덤, 유니온 랭킹 기반)
-├── collect_features.py          # 24개월 월별 스냅샷 수집 및 피처 계산
-├── main_characters.csv          # 수집된 본캐릭터 1,497명
-├── features_monthly.csv         # 월별 피처 테이블 1,497행
+├── data/                        # 수집 데이터 (gitignored)
+│   ├── main_characters.csv      #   본캐릭터 1,497명
+│   └── features_monthly.csv     #   월별 피처 테이블 1,497행
+├── scripts/                     # 데이터 수집 스크립트
+│   ├── collect_main_characters.py  # 층화 랜덤 샘플링
+│   └── collect_features.py         # 24개월 월별 스냅샷
+├── eda/                         # 탐색적 데이터 분석
+│   └── eda.ipynb
+├── h1_clustering/               # 가설 1: K-Means / DBSCAN
+├── h2_distribution/             # 가설 2: Chi-Square 검정
+├── h3_rule/                     # 가설 3: Feature Importance & Rule
+├── docs/                        # 참고 문서
+│   ├── 메이플스토리 주차 유저 클러스터링.md
+│   └── PLAN.md
 └── .env                         # API 키 (미포함)
 ```
 

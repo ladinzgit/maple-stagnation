@@ -16,6 +16,7 @@ import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 import pandas as pd
 import requests
@@ -35,7 +36,7 @@ _session.headers.update({"x-nxopen-api-key": API_KEY})
 
 # ── 설정 ─────────────────────────────────────────────────────────────────────
 TARGET_DATE = "2026-05-16"
-OUTPUT_FILE = "main_characters.csv"
+OUTPUT_FILE = str(Path(__file__).resolve().parent.parent / "data" / "main_characters.csv")
 TARGET_COUNT = 1300    # 수집 목표 인원 (달성 시 조기 종료)
 CONCURRENCY = 30       # 동시 처리 스레드 수
 MAX_RPS = 400          # req/s 상한 (API 한도 500의 80%, 안전 마진)
