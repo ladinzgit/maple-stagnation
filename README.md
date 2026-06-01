@@ -17,23 +17,36 @@ Nexon OpenAPI 데이터를 활용하여 메이플스토리 **주차 유저**를 
 
 ## 연구 가설
 
-### 가설 1 — 클러스터링으로 주차 유저 집단 분리
-> 주차 유저는 일반 유저와 플레이 패턴 feature 상에서 구별되는 군집을 형성할 것이다.
+세 가설은 각각 **비지도 학습 / 통계 / 지도 학습** 방법론을 적용하여 주차 유저 탐지 문제를 세 각도에서 검증한다.
 
-- **방법**: K-Means / DBSCAN (Elbow Method / Silhouette Score로 최적 k 선정)
-- **핵심 Feature**: 월평균 레벨 변화량, 월평균 전투력 변화량, 월평균 유니온 변화량, 심볼 성장 수준
-- **기대**: 성장 지표 변화가 거의 없는 군집이 별도 형성
+### 가설 1 (비지도 학습) — 클러스터링으로 주차 유저 집단 분리
+> 주차 유저는 일반 유저와 성장 변화량 feature 공간에서 구별되는 군집을 형성한다.
 
-### 가설 2 — 특정 레벨 구간·직업군에 불균형 집중
-> 주차 유저 군집은 특정 레벨 구간 및 직업군에서 통계적으로 유의미하게 높은 비율로 나타날 것이다.
+- **방법**: K-Means + DBSCAN (Elbow Method / Silhouette Score로 최적 k 선정)
+- **핵심 Feature**: 월평균 레벨·전투력·유니온 변화량, 어센틱심볼 성장, 아케인심볼 정체 여부 (`arcane_stagnant`)
+- **수용 기준**: K-Means **Silhouette ≥ 0.4** AND K-Means/DBSCAN **ARI ≥ 0.7** (단일 알고리즘 artifact가 아님을 확인)
+- **출력**: `data/cluster_labels.csv` (H2/H3 입력)
+
+### 가설 2 (통계) — 특정 레벨 구간·직업군에 불균형 집중
+> 주차 유저 군집은 특정 레벨 구간 및 직업 계열에서 통계적으로 유의하게 높은 비율로 나타난다.
 
 - **방법**: 카이제곱 검정 (Chi-Square Test), α = 0.05
-- **검정 대상**: 레벨 구간별(240~260, 260~280, 280~300+), 직업군별 주차 유저 비율
+- **검정 대상**:
+  - `cluster_label × level_band` (260~269 / 270~279 / 280~285)
+  - `cluster_label × class_group` (전사 / 마법사 / 궁수 / 도적 / 해적)
+- **추가 분석**: 표준화 잔차(standardized residuals)로 over/under-represented 셀 식별 → 어느 레벨/직업이 파킹 핫스팟인지 특정
 
-### 가설 3 — Rule-Based 기준의 낮은 오분류율
-> Feature Importance 기반으로 도출한 Rule-Based 타겟팅 기준은 일반 유저 피해를 최소화하면서 주차 유저를 식별할 수 있다.
+### 가설 3 (지도 학습) — Rule-Based 기준의 낮은 오분류율
+> Feature Importance 기반으로 도출한 Rule-Based 타겟팅 기준은 주차 유저를 높은 정밀도와 낮은 오타겟팅률로 식별한다.
 
-- **방법**: Random Forest / XGBoost Feature Importance → Rule 도출 → Precision / Recall / FPR / ROC-AUC 평가
+- **방법**:
+  1. Random Forest / XGBoost 학습 (H1 클러스터 레이블 = pseudo-label, 5-fold stratified CV)
+  2. SHAP / permutation importance → 상위 2~3개 핵심 피처 선정
+  3. 임계값 기반 단순 Rule 도출 (예: `Δlevel < a AND Δunion < b AND arcane_stagnant = 1`)
+  4. Rule 단독 평가: Precision, Recall, F1, **FPR (오타겟팅률)**, ROC-AUC
+  5. Threshold sweep으로 Precision-Recall trade-off 시각화
+- **수용 기준**: **Precision > 0.95 AND FPR < 5%**
+- **전제**: H1 수용 기준 충족 시 pseudo-label 신뢰도 확보
 
 ---
 
@@ -44,13 +57,25 @@ Nexon OpenAPI 데이터를 활용하여 메이플스토리 **주차 유저**를 
 - API Rate Limit: 500 req/s, 20,000,000 req/day
 - 수집 가능 기간: 최근 2년 이내
 
+### 샘플링 설계 (v2 — 종합 랭킹 기반)
+
+| 항목 | 내용 |
+|---|---|
+| 엔드포인트 | `ranking/overall` (레벨 내림차순, `class` 파라미터) |
+| 대상 레벨 | **260 ~ 285** |
+| 목표 인원 | **5계열 × 400명 = 2,000명** (H3 supervised CV/Rule threshold 안정성 확보) |
+| 레벨 균등 배분 | 260~269 / 270~279 / 280~285 각 133/133/134명 (계열별) |
+| 페이지 탐색 | 직업명별 이진 탐색으로 260~285 페이지 범위 확정 |
+
+> **레벨 상한 285 설정 근거**: 280→285 구간 레벨업에 70~99시간 소요. 285+ 캐릭터는 활성 유저도 `delta_level ≈ 0` → 파킹 신호와 구분 불가능.
+
 ### 사용 엔드포인트
 
 | 엔드포인트 | 수집 항목 |
 |---|---|
-| `ranking/union` | 유니온 랭킹 (캐릭터 샘플링) |
-| `character/basic` | 레벨, 직업, 월드 |
-| `character/stat` | 전투력 |
+| `ranking/overall` | 종합 랭킹 (캐릭터 샘플링, 직업별 필터) |
+| `id` | OCID 조회 |
+| `character/stat` | 전투력 (월 1~7일 × 7회 → max) |
 | `user/union` | 유니온 레벨 |
 | `character/symbol-equipment` | 아케인/어센틱 심볼 합산 |
 | `user/union-raider` | 본캐 판별 (유니온 블록 레벨) |
@@ -59,11 +84,11 @@ Nexon OpenAPI 데이터를 활용하여 메이플스토리 **주차 유저**를 
 
 ### 본캐 판별 로직
 
-`user/union-raider`의 `union_block` 중 `block_level` 최댓값이 현재 캐릭터 레벨 이하인 경우에만 본캐로 인정합니다. 더 높은 레벨의 블록이 존재하면 해당 캐릭터는 부캐로 분류되어 제외됩니다.
+`user/union-raider`의 `union_block` 중 `block_level` 최댓값이 현재 캐릭터 레벨 이하인 경우에만 본캐로 인정합니다.
 
 ### 피처 수집 방식 (월별 스냅샷)
 
-- 수집 기간: **2024-06 ~ 2026-05 (24개월)**
+- 수집 기간: **2025-06 ~ 2026-05 (12개월)** — 최근 행동 신호 가중, API 2년 한계 마진 확보
 - 각 캐릭터 × 월당 10회 API 호출
   - `character/basic`: 레벨, 경험치 (월 1일 기준)
   - `character/stat`: 전투력 × 7일(1~7일) → max 사용
@@ -81,7 +106,7 @@ Nexon OpenAPI 데이터를 활용하여 메이플스토리 **주차 유저**를 
 | `level`, `union_level` | 최신(마지막 유효월) 값 |
 | `arcane_symbol_score`, `authentic_symbol_score` | 심볼 레벨 합산 최신 값 |
 | `exp`, `log_exp` | 최신 월 경험치 및 log 변환값 |
-| `avg_monthly_delta_level` | 월평균 레벨 증가량 |
+| `avg_monthly_delta_level` | 월평균 레벨 증가량 (파킹 핵심 신호) |
 | `avg_monthly_delta_combat_power` | 월평균 전투력 증가량 |
 | `avg_monthly_delta_union_level` | 월평균 유니온 레벨 증가량 |
 | `avg_monthly_delta_arcane_symbol` | 월평균 아케인심볼 합산 증가량 |
@@ -95,53 +120,14 @@ Nexon OpenAPI 데이터를 활용하여 메이플스토리 **주차 유저**를 
 | 단계 | 상태 |
 |---|---|
 | 주제 확정 및 가설 설계 | ✅ 완료 |
-| Nexon OpenAPI 탐색 및 수집 스크립트 개발 | ✅ 완료 |
-| 본캐릭터 샘플링 (`collect_main_characters.py`) | ✅ 완료 — **1,497명** 수집 |
-| 월별 피처 수집 (`collect_features.py`) | ✅ 완료 — **1,497행** (24개월 스냅샷 기반) |
-| 데이터 전처리 및 EDA | 예정 |
-| 클러스터링 (가설 1) | 예정 |
-| 카이제곱 검정 (가설 2) | 예정 |
-| Feature Importance 및 Rule 평가 (가설 3) | 예정 |
-| 보고서 작성 | 예정 |
-
----
-
-## 앞으로의 계획
-
-### 1단계 — 전처리 및 EDA
-- `num_valid_months >= 2` 필터링 후 결측치 처리
-- `avg_monthly_delta_*` 컬럼 분포 시각화 (히스토그램, 박스플롯)
-- 레벨 구간별 / 직업군별 기초 통계 확인
-
-### 2단계 — 클러스터링 (가설 1)
-- 입력 피처: `avg_monthly_delta_level`, `avg_monthly_delta_combat_power`, `avg_monthly_delta_union_level`, `avg_monthly_delta_arcane_symbol`, `avg_monthly_delta_authentic_symbol`
-- StandardScaler 정규화 후 K-Means (Elbow Method / Silhouette Score로 k 선정)
-- DBSCAN으로 보조 검증
-- 클러스터별 delta 분포 시각화 → 주차 유저 군집 식별
-
-### 3단계 — 분포 검정 (가설 2)
-- 클러스터 레이블과 레벨 구간 / 직업군 교차 집계
-- Chi-Square Test (α = 0.05) 로 유의성 검정
-- 주차 유저 비율이 높은 레벨 구간 및 직업군 특정
-
-### 4단계 — Rule 도출 및 평가 (가설 3)
-- Random Forest / XGBoost로 Feature Importance 산출
-- 핵심 feature 기반 Rule 도출 (예: `Δlevel < N AND Δ전투력 < M`)
-- Precision / Recall / F1 / False Positive Rate / ROC-AUC 평가
-- Threshold별 Trade-off 시각화
-
----
-
-## 분석 스택
-
-| 단계 | 도구 |
-|---|---|
-| 데이터 수집 | Python, requests, python-dotenv |
-| 전처리 | pandas, numpy |
-| 클러스터링 | scikit-learn (K-Means, DBSCAN) |
-| 분포 검정 | scipy.stats |
-| 분류 평가 | scikit-learn, xgboost |
-| 시각화 | matplotlib, seaborn |
+| Nexon OpenAPI 탐색 및 수집 스크립트 개발 | ✅ 완료 (v2 재설계) |
+| 본캐릭터 샘플링 | 🔄 재수집 중 (260~285, 직업별 균등 2,000명) |
+| 월별 피처 수집 | ⏳ 재수집 완료 후 |
+| 데이터 전처리 및 EDA | ⏳ 새 데이터 기준 재실행 필요 |
+| 클러스터링 (가설 1) | ⏳ 예정 |
+| 카이제곱 검정 (가설 2) | ⏳ 예정 |
+| Feature Importance 및 Rule 평가 (가설 3) | ⏳ 예정 |
+| 보고서 작성 | ⏳ 예정 |
 
 ---
 
@@ -149,18 +135,18 @@ Nexon OpenAPI 데이터를 활용하여 메이플스토리 **주차 유저**를 
 
 ```bash
 # 의존성 설치
-pip install requests pandas python-dotenv scikit-learn scipy xgboost matplotlib seaborn statsmodels
+pip install requests pandas python-dotenv scikit-learn scipy xgboost matplotlib seaborn statsmodels numpy
 
 # .env 파일에 API 키 설정
-echo "MAPLE_API_KEY=your_api_key_here" > .env
+# MAPLE_API_KEY=your_api_key_here
 
-# 본캐릭터 수집 (data/main_characters.csv 생성)
+# 본캐릭터 수집 (data/main_characters.csv 생성, 예상 20~40분)
 python scripts/collect_main_characters.py
 
-# 월별 피처 수집 (data/features_monthly.csv 생성, ~13분 소요)
+# 월별 피처 수집 (data/features_monthly.csv 생성, 예상 10분)
 python scripts/collect_features.py
 
-# EDA 노트북 실행 (데이터 수집 완료 시 여기서 시작)
+# EDA 노트북 실행
 jupyter notebook eda/eda.ipynb
 ```
 
@@ -170,22 +156,39 @@ jupyter notebook eda/eda.ipynb
 
 ```
 maple_parking_detect/
-├── data/                        # 수집 데이터 (gitignored)
-│   ├── main_characters.csv      #   본캐릭터 1,497명
-│   └── features_monthly.csv     #   월별 피처 테이블 1,497행
-├── scripts/                     # 데이터 수집 스크립트
-│   ├── collect_main_characters.py  # 층화 랜덤 샘플링
-│   └── collect_features.py         # 24개월 월별 스냅샷
-├── eda/                         # 탐색적 데이터 분석
+├── data/                           # 수집 데이터 (gitignored)
+│   ├── main_characters.csv         #   본캐릭터 2,000명 (260~285, 직업별 균등)
+│   ├── features_monthly.csv        #   월별 피처 테이블
+│   └── cluster_labels.csv          #   H1 클러스터 레이블 (H2/H3 입력)
+├── scripts/
+│   ├── collect_main_characters.py  #   종합 랭킹 기반 샘플링 (v2)
+│   └── collect_features.py         #   12개월 월별 스냅샷 수집
+├── eda/                            # 탐색적 데이터 분석
 │   └── eda.ipynb
-├── h1_clustering/               # 가설 1: K-Means / DBSCAN
-├── h2_distribution/             # 가설 2: Chi-Square 검정
-├── h3_rule/                     # 가설 3: Feature Importance & Rule
-├── docs/                        # 참고 문서
-│   ├── 메이플스토리 주차 유저 클러스터링.md
-│   └── PLAN.md
-└── .env                         # API 키 (미포함)
+├── h1_clustering/                  # 가설 1: K-Means / DBSCAN
+│   └── h1_clustering.ipynb
+├── h2_distribution/                # 가설 2: Chi-Square 검정
+│   └── h2_distribution.ipynb       #   (작성 예정)
+├── h3_rule/                        # 가설 3: Feature Importance & Rule
+│   └── h3_rule.ipynb               #   (작성 예정)
+├── docs/
+│   ├── PROJECT.md                  #   프로젝트 상세 기록
+│   └── level.txt                   #   레벨별 경험치 참고 데이터
+└── .env                            # API 키 (미포함)
 ```
+
+---
+
+## 분석 스택
+
+| 단계 | 도구 |
+|---|---|
+| 데이터 수집 | Python, requests, python-dotenv |
+| 전처리 | pandas, numpy, scipy (Winsorize) |
+| 클러스터링 | scikit-learn (K-Means, DBSCAN) |
+| 분포 검정 | scipy.stats |
+| 분류 평가 | scikit-learn, xgboost |
+| 시각화 | matplotlib, seaborn |
 
 ---
 

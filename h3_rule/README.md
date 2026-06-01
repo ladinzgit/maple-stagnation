@@ -1,26 +1,44 @@
-# 가설 3 — Feature Importance 기반 Rule 평가
+# 가설 3 (지도) — Feature Importance 기반 Rule 평가
 
-Feature Importance로 도출한 Rule이 일반 유저 피해 없이 주차 유저를 식별할 수 있는지 평가한다.
+Feature Importance로 도출한 단순 Rule이 일반 유저 피해를 최소화하면서 주차 유저를 식별할 수 있는지 평가한다. 분류기는 핵심 피처 식별 도구이며, **본 평가 대상은 Rule** 이다.
 
 ## 입력
 
-H1 클러스터 레이블 (pseudo-label) + 전체 피처
+- `data/cluster_labels.csv` (H1 pseudo-label)
+- `data/features_monthly.csv` 전체 피처
+- 전제: H1 수용 기준(Silhouette ≥ 0.4, ARI ≥ 0.7) 충족
 
 ## 방법
 
-1. Random Forest / XGBoost 학습 (pseudo-label 기준)
-2. Feature Importance 산출 → 핵심 피처 기반 Rule 도출
-   - 예: `Δ레벨 < N AND Δ전투력 < M`
-3. Precision / Recall / F1 / **False Positive Rate** / ROC-AUC 평가
-4. Threshold별 Trade-off 시각화
+1. **분류기 학습** (importance 추출 용도)
+   - Random Forest, XGBoost
+   - 5-fold stratified CV (class imbalance 고려)
+   - pseudo-label = H1 클러스터 레이블
+2. **Feature Importance 산출**
+   - SHAP values (mean |SHAP|) 또는 permutation importance
+   - 상위 2~3개 핵심 피처 선정
+3. **단순 Rule 도출**
+   - 예: `Δlevel < a AND Δunion_level < b AND arcane_stagnant = 1`
+   - 임계값 a, b는 핵심 피처 분포의 분위수에서 후보 → grid search
+4. **Rule 단독 평가** (분류기 성능과 별도)
+   - Precision, Recall, F1, **FPR (오타겟팅률)**, ROC-AUC
+5. **Threshold sweep**
+   - 임계값 a, b 변경에 따른 Precision / Recall / FPR 곡선
+   - Precision-Recall curve로 운영 임계값 권고
+
+## 수용 기준
+
+**Precision > 0.95 AND FPR < 5%** (디렉터의 "일반 유저 피해 최소화" 요구 직접 반영)
 
 ## 출력
 
-- Feature Importance 차트
-- 최적 Rule 조건
-- 평가 지표 테이블 및 ROC Curve
+- Feature Importance 차트 (SHAP summary plot 또는 bar chart)
+- 최종 Rule 정의 (임계값 포함)
+- 평가 지표 테이블 (Precision / Recall / F1 / FPR / ROC-AUC)
+- Threshold sweep 시각화 (PR curve, FPR-Recall trade-off)
+- 운영 임계값 권고 (디렉터 타겟팅 시나리오 별)
 
 ## 주의
 
-H3 pseudo-label 품질은 H1 Silhouette Score에 의존한다.
-H1 Silhouette Score > 0.4 달성 시 H3 신뢰도 확보.
+- 분류기 자체 성능 보고는 부차적 (importance 추출의 sanity check 용도)
+- Rule의 단순성 ↔ 성능 trade-off를 threshold sweep으로 명시적으로 제시

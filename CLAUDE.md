@@ -19,106 +19,128 @@ Full project plan and hypothesis details are in `docs/메이플스토리 주차 
 # Install dependencies
 pip install requests pandas python-dotenv scikit-learn scipy xgboost matplotlib seaborn numpy statsmodels
 
-# Collect main characters (stratified random sampling, writes data/main_characters.csv)
+# Collect main characters (ranking/overall, level 260–285, 5계열×400=2,000명, writes data/main_characters.csv)
 python scripts/collect_main_characters.py
 
-# Collect 24-month monthly snapshots and compute delta features (writes data/features_monthly.csv, ~13 min)
+# Collect 12-month monthly snapshots and compute delta features (writes data/features_monthly.csv, ~11 min)
 python scripts/collect_features.py
 
-# Open analysis notebook (data collection already complete — start here for analysis)
+# EDA (read-only — do NOT add experiment code here)
 jupyter notebook eda/eda.ipynb
+
+# H1 clustering experiment
+jupyter notebook h1_clustering/h1_clustering.ipynb
 ```
 
-**Data collection is already complete.** Both CSV files exist locally in `data/` (gitignored). Do not re-run the collection scripts unless the data needs refreshing.
+**Data collection is complete.** Both CSV files exist in `data/` (gitignored).
 
 ## API Configuration
 
 The Nexon OpenAPI key is stored in `.env` as `MAPLE_API_KEY`. All scripts load it via `python-dotenv`.
 
 **Critical API constraints:**
-- Rate limit: **500 req/s**, **20,000,000 req/day** — both scripts use a `RateLimiter` capped at 400 req/s (80% of limit) with 30 concurrent threads
+- Rate limit: **500 req/s**, **20,000,000 req/day** — both scripts use a `RateLimiter` capped at 400 req/s with 30 concurrent threads
 - Data availability: last 2 years only; snapshots refresh daily around 08:00 KST
-- `date` parameter format: `YYYY-MM-DD` (use yesterday or earlier — today's data may not be ready)
-- History APIs (cube, starforce, potential) require account-owner authentication → **excluded from this project**
+- `date` parameter format: `YYYY-MM-DD` (use yesterday or earlier)
+- History APIs (cube, starforce, potential) require account-owner authentication → excluded
 
 ## Data Collection Architecture
 
-### Pipeline overview
-
 Both scripts share the same `RateLimiter` + `ThreadPoolExecutor(30)` pattern and a persistent `requests.Session` with a 60-connection pool.
 
-**`collect_main_characters.py`** — stratified random sampling of main characters
+**`collect_main_characters.py` (v2)** — `ranking/overall`-based main character collection, level 260–285
 
-1. Samples union-ranking pages across 5 tiers (pages 1–6000) using `PAGES_PER_TIER=5` random pages per tier
-2. For each candidate: `id` → `character/basic` → `user/union-raider` (3 sequential calls)
-3. Main-character filter: `max(union_block.block_level) <= character_level` (if a higher-level block exists, the character is an alt)
-4. Saves to `main_characters.csv` incrementally (UTF-8-BOM, deduped by OCID); stops at `TARGET_COUNT=1300`
+1. Binary-search page ranges per job class to locate the 260–285 band in `ranking/overall`
+2. 5계열 × 400명 = 2,000명 target; per-계열: 3 level bins (260–269/270–279/280–285) each ~133명
+3. Phase 1 (diversity): collect up to `max(MIN_PER_CLASS=10, 400÷job_count)` per job; Phase 2 (fill): round-robin up to `MAX_PER_CLASS=100`
+4. For each candidate: `ranking/overall` → `id` → `character/basic` (create-date filter) → `user/union-raider` (main-char check)
+5. Main-char filter: `max(union_block.block_level) <= character_level`
+6. Create-date filter: `character_date_create > CREATE_CUTOFF=2025-06-30` → skip (new chars lack 12-month window)
+7. Saves to `main_characters.csv` incrementally (UTF-8-BOM, deduped by OCID)
 
-**`collect_features.py`** — 24-month monthly snapshot collection
+Design rationale: level 285+ active users also have `delta_level ≈ 0` → noise; 260–285 is the parking-signal window.
+
+**`collect_features.py` (v2.2)** — 12-month monthly snapshot collection
 
 1. Reads `main_characters.csv`, skips OCIDs already in `features_monthly.csv`
-2. For each character × each of 24 months (2024-06 → 2026-05): calls `character/basic`, `character/stat` × 7 days (→ max combat power), `user/union`, `character/symbol-equipment`; if `basic` returns None the month is skipped
-3. `avg_monthly_delta()` computes per-feature monthly average change between first and last valid month (requires ≥2 valid months)
-4. Saves to `features_monthly.csv` incrementally every 100 characters
+2. 12-month window (not 24): current parking behavior matters; 24mo risks classifying "parked-then-returned" users
+3. Per character × 12 months: `character/basic` + `character/stat` × 7 days (→ max combat power) + `user/union` + `character/symbol-equipment` + `character/hexamatrix`
+4. Computes `avg_monthly_delta_*` (12mo) and `recent{3,6}_delta_*` (short-window slope)
+5. Saves to `features_monthly.csv` incrementally every 100 characters
 
-Total API calls: ~1,300 × 24 × 10 ≈ 312,000 → ~780 s at 400 req/s
+Total API calls: ~2,000 × 12 × 11 ≈ 264,000 → ~660 s at 400 req/s
 
 ### Output files
 
 | File | Description |
 |---|---|
-| `data/main_characters.csv` | 1,497 main characters with name, OCID, level, class, world, union level |
-| `data/features_monthly.csv` | 1,497 rows; 24-month delta features per character (see below) |
+| `data/main_characters.csv` | ~2,000 main characters, level 260–285, 5계열 균등 |
+| `data/features_monthly.csv` | ~2,000 rows; 12-month delta features per character |
+| `data/cluster_labels.csv` | `cluster_km`, `is_parking` per character (written by H1 notebook) |
 
 ### Feature columns in `features_monthly.csv`
-
-Snapshot values are taken from the **last valid month**. Delta values are monthly averages over the observed window.
 
 | Column | Description |
 |---|---|
 | `level`, `union_level` | Latest snapshot value |
 | `arcane_symbol_score`, `authentic_symbol_score` | Sum of symbol levels (latest) |
-| `exp`, `log_exp` | Latest exp; `log1p` transform |
+| `hexa_level_sum` | Sum of HEXA core levels (latest) — clean monotonic activity signal at 260+ |
 | `avg_monthly_delta_level` | Key parking signal: near-zero for parked users |
 | `avg_monthly_delta_combat_power` | Key parking signal |
 | `avg_monthly_delta_union_level` | Key parking signal |
 | `avg_monthly_delta_arcane_symbol` | Symbol growth rate |
 | `avg_monthly_delta_authentic_symbol` | Symbol growth rate |
+| `avg_monthly_delta_hexa` | HEXA growth rate |
+| `recent3_delta_*`, `recent6_delta_*` | Short-window (3/6 mo) slopes — age-debiased parking signal |
+| `access_active_months`, `access_ratio`, `access_recent` | Recent login activity (from `access_flag` in `character/basic`) |
+| `character_age_months`, `created_in_window` | Age diagnostics; `created_in_window=1` = new class (렌 cohort) |
 | `first_valid_month`, `last_valid_month`, `num_valid_months` | Valid data window |
 
-## Analysis Notebook (`eda.ipynb`)
+## Notebook Structure
 
-EDA is complete. The notebook is structured in sections:
+**Rule: experiment code goes in hypothesis folders, never in `eda/eda.ipynb`.**
 
-| Section | Content |
+| Notebook | Role |
 |---|---|
-| Sec 0 | Environment setup, load `features_monthly.csv`, define `DELTA_COLS`, `BAND_PALETTE`, level bands |
-| Sec 1 | Data quality: 34 rows NaN in `delta_level/cp/union` → listwise deletion → `df_clean` (1,463 rows); `num_valid_months` is always 24 |
-| Sec 2–3 | Univariate distributions; bivariate correlations; VIF (all ≤ 5 — no multicollinearity) |
-| Sec 4 | Job class grouping via `CLASS_GROUP_MAP` (5 계열: 전사/마법사/궁수/도적/해적) |
-| Sec 5 | Level band Chi-Square pre-check: H2 feasible for 4 level bands and 5 class groups |
-| Sec 6–7 | Exploratory: `exp_rank_within_level` as parking proxy; arcane/authentic symbol saturation analysis |
-| Sec 8 | `stagnation_score` (0–5): 54 characters score 5 (all signals stagnant) |
-| Sec 9 | H1/H2/H3 feasibility checklists |
-| Sec 10 | **Preprocessing decisions** — defines `df_final` and two candidate feature sets for clustering |
+| `eda/eda.ipynb` | EDA only — distributions, correlations, preprocessing decisions. Do not add H1/H2/H3 code. |
+| `h1_clustering/h1_clustering.ipynb` | H1: K-Means + DBSCAN clustering |
+| `h2_distribution/` | H2: Chi-Square distribution tests (notebook not yet created) |
+| `h3_rule/` | H3: Random Forest / XGBoost rule extraction (notebook not yet created) |
 
-### Key EDA Findings Affecting Clustering (Sec 10)
+Each hypothesis notebook is self-contained: loads `data/features_monthly.csv` and reproduces preprocessing inline (no intermediate CSV hand-off from eda.ipynb).
 
-- **`delta_cp` Winsorize P5–P95**: 22% of values are negative; apply `winsorize(limits=[0.05, 0.05])`
-- **`delta_union` and `delta_arcane` negative values → clamp to 0** (3 and 1 rows respectively)
-- **Arcane symbol binarization**: 84% of characters have `arcane_symbol_score == 120` (max), making `delta_arcane` 0 for 67% → replace with `arcane_stagnant` binary flag (`arcane < 120 AND delta == 0`)
-- **Two candidate feature sets** to compare by Silhouette Score:
-  - `CLUSTER_FEATURES_A`: `[delta_level, delta_cp, delta_union, delta_authentic, arcane_stagnant]`
-  - `CLUSTER_FEATURES_B`: original 5 delta columns (arcane as-is)
+## Clustering Decisions (H1 — Complete)
 
-### Remaining Analysis Phases
+### Feature sets
 
-| Phase | Input | Method | Output |
-|---|---|---|---|
-| Clustering (H1) | `df_final`, feature sets A & B | StandardScaler → K-Means (Elbow/Silhouette) + DBSCAN | Cluster labels |
-| Distribution test (H2) | Cluster labels × level band/class group | Chi-Square (α=0.05) | p-values |
-| Rule evaluation (H3) | Cluster labels as pseudo-labels | Random Forest / XGBoost → threshold rules | Precision/Recall/FPR/ROC-AUC |
+- **Feature Set A (12mo avg) — primary**: `[avg_monthly_delta_level, delta_cp(winsorized P5–P95), delta_union(clamped ≥ 0), avg_monthly_delta_authentic_symbol, arcane_stagnant]`
+- **Feature Set A' (recent6) — age-debiased**: same but using `recent6_delta_*`; used to check if 렌 cohort (2025-06 launch, high initial delta) causes age bias in A
 
-### Other Files
+`normalized_delta_level` is **excluded** — empirical P75 normalization is biased by parking-user concentration in the 260–270 range (Spearman r=−0.429, wiki vs empirical mismatch). Only propose it if the user explicitly asks.
 
-- `docs/PLAN.md`: Historical design document for the `collect_features.py` monthly-snapshot redesign. Superseded by the implemented code — reference only.
+### Preprocessing
+
+- `delta_cp`: `winsorize(limits=[0.05, 0.05])` — 22% negative values
+- `delta_union`, `delta_arcane`: clamp to 0 (tiny negative artifact)
+- `arcane_stagnant` binary: `arcane_symbol_score < 120 AND avg_monthly_delta_arcane == 0`
+
+### H1 Results (on v1 data — re-run needed on v2 data)
+
+Best k=5, Silhouette=0.4517 → "분리 가능 (H1 지지)". Parking cluster (ID=1): 52명 (3.8%), 78.8% parked-proxy, stagnation_score=5 for 100% of stag5 chars.
+
+## Remaining Analysis Phases
+
+| Phase | Notebook | Status |
+|---|---|---|
+| H1 Clustering | `h1_clustering/h1_clustering.ipynb` | Complete (v1 data); re-run on v2 data |
+| H2 Distribution test | `h2_distribution/` (create notebook) | Not started |
+| H3 Rule evaluation | `h3_rule/` (create notebook) | Not started |
+
+H2 uses `cluster_labels.csv` (from H1) × level_band/class_group → Chi-Square (α=0.05).  
+H3 uses `is_parking` as pseudo-labels → Random Forest/XGBoost → threshold rules → Precision/Recall/FPR/ROC-AUC.
+
+## Other Files
+
+- `docs/PLAN.md`: Historical design document. Superseded by implemented code — reference only.
+- `h1_clustering/h1_clustering.py`: Script version of H1 notebook.
+- `assets/NanumSquareNeo-bRg.ttf`: Korean font used in all notebooks.
