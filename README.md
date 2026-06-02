@@ -23,7 +23,8 @@ Nexon OpenAPI 데이터를 활용하여 메이플스토리 **주차 유저**를 
 > 주차 유저는 일반 유저와 성장 변화량 feature 공간에서 구별되는 군집을 형성한다.
 
 - **방법**: K-Means + DBSCAN (Elbow Method / Silhouette Score로 최적 k 선정)
-- **핵심 Feature**: 월평균 레벨·전투력·유니온 변화량, 어센틱심볼 성장, 아케인심볼 정체 여부 (`arcane_stagnant`)
+- **핵심 Feature**: 월평균 레벨·전투력·유니온 변화량, 어센틱심볼·아케인심볼 성장 (연속형)
+  - `arcane_stagnant` 이진 피처는 **클러스터링에서 제외** → StandardScaler 후 단일 bool 축 지배 문제. 사후 검증(stagnation_score)에만 유지.
 - **수용 기준**: K-Means **Silhouette ≥ 0.4** AND K-Means/DBSCAN **ARI ≥ 0.7** (단일 알고리즘 artifact가 아님을 확인)
 - **출력**: `data/cluster_labels.csv` (H2/H3 입력)
 
@@ -105,12 +106,17 @@ Nexon OpenAPI 데이터를 활용하여 메이플스토리 **주차 유저**를 
 | `character_name`, `ocid`, `character_class`, `world_name` | 식별 정보 |
 | `level`, `union_level` | 최신(마지막 유효월) 값 |
 | `arcane_symbol_score`, `authentic_symbol_score` | 심볼 레벨 합산 최신 값 |
+| `hexa_level_sum` | HEXA 코어 레벨 합산 최신 값 (260+ 단조 증가 활동 신호) |
 | `exp`, `log_exp` | 최신 월 경험치 및 log 변환값 |
 | `avg_monthly_delta_level` | 월평균 레벨 증가량 (파킹 핵심 신호) |
-| `avg_monthly_delta_combat_power` | 월평균 전투력 증가량 |
-| `avg_monthly_delta_union_level` | 월평균 유니온 레벨 증가량 |
+| `avg_monthly_delta_combat_power` | 월평균 전투력 증가량 (파킹 핵심 신호) |
+| `avg_monthly_delta_union_level` | 월평균 유니온 레벨 증가량 (파킹 핵심 신호) |
 | `avg_monthly_delta_arcane_symbol` | 월평균 아케인심볼 합산 증가량 |
 | `avg_monthly_delta_authentic_symbol` | 월평균 어센틱심볼 합산 증가량 |
+| `avg_monthly_delta_hexa` | 월평균 HEXA 레벨 합산 증가량 |
+| `recent3_delta_*`, `recent6_delta_*` | 3개월/6개월 단기 기울기 — 나이 편향 보정용 (렌 코호트 대응) |
+| `access_active_months`, `access_ratio`, `access_recent` | 최근 로그인 활동 (`character/basic` `access_flag` 기반) |
+| `character_age_months`, `created_in_window` | 캐릭터 연령; `created_in_window=1` = 새 직업 코호트 (렌 등) |
 | `first_valid_month`, `last_valid_month`, `num_valid_months` | 유효 월 범위 |
 
 ---
@@ -121,11 +127,11 @@ Nexon OpenAPI 데이터를 활용하여 메이플스토리 **주차 유저**를 
 |---|---|
 | 주제 확정 및 가설 설계 | ✅ 완료 |
 | Nexon OpenAPI 탐색 및 수집 스크립트 개발 | ✅ 완료 (v2 재설계) |
-| 본캐릭터 샘플링 | 🔄 재수집 중 (260~285, 직업별 균등 2,000명) |
-| 월별 피처 수집 | ⏳ 재수집 완료 후 |
-| 데이터 전처리 및 EDA | ⏳ 새 데이터 기준 재실행 필요 |
-| 클러스터링 (가설 1) | ⏳ 예정 |
-| 카이제곱 검정 (가설 2) | ⏳ 예정 |
+| 본캐릭터 샘플링 | ✅ 완료 (260~285, 직업별 균등 2,000명) |
+| 월별 피처 수집 | ✅ 완료 (`data/features_monthly.csv`, `data/hexa_fragments.csv`) |
+| 데이터 전처리 및 EDA | ✅ 완료 (v2, df_final 1,337명) |
+| 클러스터링 (가설 1) | 🔄 v2 데이터 기준 재실행 필요 (v1 결과 보유) |
+| 카이제곱 검정 (가설 2) | ⏳ H1 cluster_labels.csv 생성 후 |
 | Feature Importance 및 Rule 평가 (가설 3) | ⏳ 예정 |
 | 보고서 작성 | ⏳ 예정 |
 
