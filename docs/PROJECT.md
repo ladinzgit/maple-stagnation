@@ -35,7 +35,7 @@ CLUSTER_FEATURES = [
 | 분석 표본 | 1,965명 |
 | 최적 k | 4 |
 | silhouette | 0.6430 |
-| 성장 정체 군집 | 394명 (20.1%) |
+| 성장 정체 군집 | 394명 (20.0%) |
 
 현재 지향 분기 외부 검증:
 
@@ -59,3 +59,23 @@ CLUSTER_FEATURES = [
 H2와 H3에서 주차 후보 분포 또는 규칙을 분석할 때는 `is_current_parking_candidate` 또는
 `is_high_confidence_candidate`를 명시적으로 선택한다. `is_stagnant_cluster`를 주차 후보 확정
 라벨로 해석하지 않는다.
+
+## H3 설계 (지도 학습) — 접속 피처를 분류기 입력에 포함
+
+주차는 *성장 정체 + 활성 접속*의 2차원 신호다. 성장 정체 군집만으로는 주차 후보와 휴면이
+분리되지 않는다(정체 군집의 약 94%가 휴면). 따라서 휴면을 **수집·전처리 단계에서 사전 필터로
+제거하지 않고**, 접속 피처를 **분류기 입력**으로 넣어 모델이 성장×접속 결합을 직접 학습하게 한다.
+지도 학습 제약을 지키면서 휴면 분리를 모델이 수행한다.
+
+- **분류기**: Random Forest / XGBoost, 5-fold stratified CV.
+- **pseudo-label (positive)**: `is_current_parking_candidate` (성장 정체 ∩ 접속 활성). 민감도
+  분석은 `is_high_confidence_candidate`. 접속 조건이 라벨에 내재되어 휴면이 positive에서 빠진다.
+- **입력 피처**: 넓은 원시 관측 피처(Δlevel, Δcombat_power, Δauthentic_symbol, Δhexa,
+  union_level, level, hexa_level_sum, character_age_months) + **접속 피처**
+  (`access_active_months`, `access_ratio`, `access_recent`). 클러스터링 3피처
+  (cumEXP·union·hexa_frag)는 순환 방지로 제외 또는 제한한다.
+- **class imbalance**: positive 비율이 낮으므로 `class_weight='balanced'` / `scale_pos_weight`,
+  stratified fold 적용. positive n 부족 시 접속 임계 완화 라벨로 학습하고 엄격 라벨로 평가한다(2-tier).
+- **Rule**: feature importance(SHAP/permutation) 상위 피처로 접속 항을 포함한 단순 임계 규칙 도출
+  → Precision / Recall / F1 / FPR / ROC-AUC. 수용 기준 Precision > 0.95 AND FPR < 5%.
+- **한계**: ground truth 없음 → 지표는 pseudo-label 대비값. FPR은 휴면/일반 오분류율로 해석한다.

@@ -173,7 +173,8 @@ Each hypothesis notebook is self-contained: loads `data/features_monthly.csv` an
 | H3 Rule evaluation | `h3_rule/` (create notebook) | Not started |
 
 H2 uses `h1_current_candidates.csv` (from `temporal_external_validation.ipynb`) × level_band/class_group → Chi-Square (α=0.05).  
-H3 uses `is_high_confidence_candidate` / `is_current_parking_candidate` (from `h1_current_candidates.csv`) as pseudo-labels → Random Forest/XGBoost → threshold rules → Precision/Recall/FPR/ROC-AUC.
+H3 (supervised) uses `is_current_parking_candidate` / `is_high_confidence_candidate` (from `h1_current_candidates.csv`, = 성장 정체 ∩ 접속 활성) as pseudo-labels → Random Forest/XGBoost → threshold rules → Precision/Recall/FPR/ROC-AUC.
+**Access-as-input design**: access features (`access_active_months`, `access_ratio`, `access_recent`) are **included in the classifier input** so the model learns the growth×access combination directly — dormant accounts are NOT pre-filtered (pre-filtering would condition the sample on the validation variable → circular). Input = broad raw observable features + access; the 3 clustering features (cumEXP·union·hexa_frag) are excluded/limited to avoid reproducing the H1 boundary (circularity). Class imbalance: `class_weight='balanced'`/`scale_pos_weight`, stratified CV; if positive n too small, relax the access threshold for training labels and report precision on the strict label (2-tier). No ground truth → metrics are vs pseudo-label; FPR = dormant/normal misclassification rate.
 
 ## Other Files
 

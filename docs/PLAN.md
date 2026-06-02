@@ -32,3 +32,9 @@ jupyter nbconvert --to notebook --execute --inplace h1_clustering/temporal_exter
 2. 6개월 분할로 장기 고정 상태 해석 가능성을 확인한다.
 3. 분기 순차 검증으로 현재 시점 후보 탐색 성능을 확인한다.
 4. 최신 분기 후보 파일을 H2/H3 입력으로 사용한다.
+
+## H3 입력 규약 (지도 학습)
+
+- pseudo-label = `is_current_parking_candidate` (성장 정체 ∩ 접속 활성).
+- 접속 피처(`access_active_months`, `access_ratio`, `access_recent`)를 **분류기 입력 피처로 포함**한다. 휴면은 사전 필터가 아니라 모델이 성장×접속 결합으로 분리한다.
+- 클러스터링 3피처(cumEXP·union·hexa_frag)는 순환 방지로 제외/제한한다.
