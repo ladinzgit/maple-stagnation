@@ -53,13 +53,13 @@ _session.headers.update({"x-nxopen-api-key": API_KEY})
 RANDOM_SEED      = 42   # 페이지 셔플 재현성 — 동일 TARGET_DATE + seed → 동일 샘플
 TARGET_DATE      = "2026-05-16"
 OUTPUT_FILE      = str(Path(__file__).resolve().parent.parent / "data" / "main_characters.csv")
-LEVEL_MIN        = 260
-LEVEL_MAX        = 285
+LEVEL_MIN        = 270
+LEVEL_MAX        = 290
 GROUPS           = ["전사", "마법사", "궁수", "도적", "해적"]
 TARGET_PER_GROUP = 400   # 5계열 × 400 = 2,000명 (H3 supervised CV/Rule threshold 통계 안정성 확보)
-# hi 는 exclusive: (260,270)=260~269, (270,280)=270~279, (280,286)=280~285
-LEVEL_BINS       = [(260, 270), (270, 280), (280, 286)]
-BIN_LABELS       = ["260~269", "270~279", "280~285"]
+# hi 는 exclusive: (270,280)=270~279, (280,286)=280~285, (286,291)=286~290
+LEVEL_BINS       = [(270, 280), (280, 286), (286, 291)]
+BIN_LABELS       = ["270~279", "280~285", "286~290"]
 _PER_BIN         = TARGET_PER_GROUP // len(LEVEL_BINS)              # 133
 BIN_TARGETS      = [_PER_BIN, _PER_BIN, _PER_BIN + (TARGET_PER_GROUP - _PER_BIN * len(LEVEL_BINS))]  # [133,133,134]
 CONCURRENCY      = 30

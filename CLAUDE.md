@@ -113,8 +113,10 @@ Each hypothesis notebook is self-contained: loads `data/features_monthly.csv` an
 
 ### Feature sets
 
-- **Feature Set A (12mo avg) — primary**: `[avg_monthly_delta_level, delta_cp(winsorized P5–P95), delta_union(clamped ≥ 0), avg_monthly_delta_authentic_symbol, arcane_stagnant]`
-- **Feature Set A' (recent6) — age-debiased**: same but using `recent6_delta_*`; used to check if 렌 cohort (2025-06 launch, high initial delta) causes age bias in A
+- **Feature Set A (12mo avg) — primary**: `[avg_monthly_delta_level, delta_cp(winsorized P5–P95), delta_union(clamped ≥ 0), avg_monthly_delta_authentic_symbol, avg_monthly_delta_arcane_symbol(clamped ≥ 0)]`
+- **Feature Set A' (recent6) — age-debiased**: same but using `recent6_delta_*` (arcane: `recent6_delta_arcane_symbol` or fallback to 12mo); used to check if 렌 cohort (2025-06 launch, high initial delta) causes age bias in A
+
+`arcane_stagnant` binary is **excluded from clustering** — binary feature dominates K-Means axis after StandardScaler, effectively reproducing a single boolean split rather than multi-dimensional clustering. Replaced by continuous `avg_monthly_delta_arcane_symbol`. `arcane_stagnant` is retained for `stagnation_score` computation and post-hoc validation only.
 
 `normalized_delta_level` is **excluded** — empirical P75 normalization is biased by parking-user concentration in the 260–270 range (Spearman r=−0.429, wiki vs empirical mismatch). Only propose it if the user explicitly asks.
 
@@ -122,17 +124,33 @@ Each hypothesis notebook is self-contained: loads `data/features_monthly.csv` an
 
 - `delta_cp`: `winsorize(limits=[0.05, 0.05])` — 22% negative values
 - `delta_union`, `delta_arcane`: clamp to 0 (tiny negative artifact)
-- `arcane_stagnant` binary: `arcane_symbol_score < 120 AND avg_monthly_delta_arcane == 0`
+- `arcane_stagnant` binary (validation only): `arcane_symbol_score < 120 AND avg_monthly_delta_arcane == 0`
 
 ### H1 Results (on v1 data — re-run needed on v2 data)
 
 Best k=5, Silhouette=0.4517 → "분리 가능 (H1 지지)". Parking cluster (ID=1): 52명 (3.8%), 78.8% parked-proxy, stagnation_score=5 for 100% of stag5 chars.
 
+### v2 EDA Key Numbers (2026-06-01)
+
+- **df_final (analysis base)**: 1,337명 (원본 2,000 → 260-285 필터 후 1,358 → delta NaN 제거 후 1,337)
+- **Δlevel=0 비율**: 48.6%
+- **Triple-zero parked proxy**: 18.7% (250명)
+- **stagnation_score=5**: 41명 (3.1%)
+- **created_in_window=1** (렌 코호트): 326명 / 2,000명 (16.3%)
+- **hexa_fragments EDA**: r(delta_hexa_frag, delta_hexa) = 0.985 → 완전 중복 → 클러스터링 피처 제외 확정
+- **hexa_fragments.csv** added to `data/` — H3에서 추가 파생 피처로 활용 가능 (hexa_fragments_total)
+
+### Output files (updated)
+
+| File | Description |
+|---|---|
+| `data/hexa_fragments.csv` | 2,000명 헥사 조각 소비량 (12개월 스냅샷 기반) |
+
 ## Remaining Analysis Phases
 
 | Phase | Notebook | Status |
 |---|---|---|
-| H1 Clustering | `h1_clustering/h1_clustering.ipynb` | Complete (v1 data); re-run on v2 data |
+| H1 Clustering | `h1_clustering/h1_clustering.ipynb` | Re-run on v2 data (v1 results stale) |
 | H2 Distribution test | `h2_distribution/` (create notebook) | Not started |
 | H3 Rule evaluation | `h3_rule/` (create notebook) | Not started |
 
