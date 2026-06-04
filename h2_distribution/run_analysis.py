@@ -1,9 +1,11 @@
-"""Run the predefined H2 distribution tests for current parking candidates."""
+"""Run the predefined H2 distribution tests for H1 parking candidates."""
 
 from __future__ import annotations
 
+import argparse
 import json
 import math
+import sys
 from pathlib import Path
 
 import matplotlib.pyplot as plt
@@ -17,28 +19,78 @@ ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "data"
 OUTPUT_DIR = ROOT / "h2_distribution"
 FIGURE_DIR = OUTPUT_DIR / "figures"
+sys.path.insert(0, str(ROOT))
+
+from scripts.collect_main_characters import CLASS_GROUP_MAP
+
 
 LEVEL_BINS = [269, 279, 285, 290]
 LEVEL_LABELS = ["270-279", "280-285", "286-290"]
 CLASS_ORDER = ["전사", "마법사", "궁수", "도적", "해적"]
-LABELS = [
-    ("is_current_parking_candidate", "기본 라벨"),
-    ("is_high_confidence_candidate", "고신뢰 민감도 라벨"),
+LABEL_SPECS = [
+    ("is_stagnant_cluster", "H1 클러스터 후보", "cluster"),
+    ("is_current_parking_candidate", "현재성 후보", "current"),
+    ("is_high_confidence_candidate", "고신뢰 현재성 후보", "current"),
 ]
 ALPHA = 0.05
 MONTE_CARLO_ITERATIONS = 100_000
 RANDOM_SEED = 42
 
 
-def load_data() -> pd.DataFrame:
-    main = pd.read_csv(DATA_DIR / "main_characters.csv")
-    candidates = pd.read_csv(DATA_DIR / "h1_current_candidates.csv")
-    df = main[["ocid", "level", "class_group"]].merge(
-        candidates[["ocid", *[label for label, _ in LABELS]]],
+def input_paths() -> tuple[Path, Path, Path]:
+    return (
+        DATA_DIR / "features_monthly.csv",
+        DATA_DIR / "cluster_labels.csv",
+        DATA_DIR / "h1_current_candidates.csv",
+    )
+
+
+def load_data() -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
+    features_path, cluster_path, current_path = input_paths()
+    features = pd.read_csv(features_path, encoding="utf-8-sig")
+    cluster_labels = pd.read_csv(cluster_path, encoding="utf-8-sig")
+    current_labels = pd.read_csv(current_path, encoding="utf-8-sig")
+
+    for frame in (features, cluster_labels, current_labels):
+        frame["ocid"] = frame["ocid"].astype(str)
+
+    if "class_group" not in features.columns:
+        features["class_group"] = features["character_class"].map(CLASS_GROUP_MAP)
+
+    base_columns = ["ocid", "level", "class_group"]
+    cluster_df = features[base_columns].merge(
+        cluster_labels[["ocid", "is_stagnant_cluster"]],
         on="ocid",
         how="inner",
         validate="one_to_one",
     )
+    current_df = features[base_columns].merge(
+        current_labels[
+            [
+                "ocid",
+                "is_current_parking_candidate",
+                "is_high_confidence_candidate",
+            ]
+        ],
+        on="ocid",
+        how="inner",
+        validate="one_to_one",
+    )
+
+    datasets = {
+        "cluster": add_level_band(cluster_df),
+        "current": add_level_band(current_df),
+    }
+    paths = {
+        "features_input": str(features_path.relative_to(ROOT)).replace("\\", "/"),
+        "cluster_input": str(cluster_path.relative_to(ROOT)).replace("\\", "/"),
+        "current_input": str(current_path.relative_to(ROOT)).replace("\\", "/"),
+    }
+    return datasets, paths
+
+
+def add_level_band(df: pd.DataFrame) -> pd.DataFrame:
+    df = df.copy()
     df["level_band"] = pd.cut(
         df["level"],
         bins=LEVEL_BINS,
@@ -47,6 +99,8 @@ def load_data() -> pd.DataFrame:
     )
     if df["level_band"].isna().any():
         raise ValueError("level_band contains missing values; check the expected 270-290 range")
+    if df["class_group"].isna().any():
+        raise ValueError("class_group contains missing values; update CLASS_GROUP_MAP")
     return df
 
 
@@ -162,7 +216,7 @@ def analyze_dimension(
     }
 
 
-def analyze_label(df: pd.DataFrame, label: str, description: str) -> dict:
+def analyze_label(df: pd.DataFrame, label: str, description: str, dataset: str) -> dict:
     tests = [
         analyze_dimension(df, label, "level_band", LEVEL_LABELS),
         analyze_dimension(df, label, "class_group", CLASS_ORDER),
@@ -173,6 +227,7 @@ def analyze_label(df: pd.DataFrame, label: str, description: str) -> dict:
     return {
         "label": label,
         "description": description,
+        "dataset": dataset,
         "n": int(len(df)),
         "candidate_n": int(df[label].sum()),
         "candidate_rate": float(df[label].mean()),
@@ -184,51 +239,78 @@ def format_p(value: float) -> str:
     return f"{value:.4g}"
 
 
+def format_rate(value: float) -> str:
+    return f"{value * 100:.2f}%"
+
+
+def decision(test: dict) -> str:
+    return "유의" if test["holm_adjusted_p_value"] < ALPHA else "유의하지 않음"
+
+
+def append_test_table(lines: list[str], label_result: dict, title_prefix: str) -> None:
+    level_test, class_test = label_result["tests"]
+    lines.extend(
+        [
+            f"### {title_prefix} 검정 요약",
+            "",
+            "| 검정 | chi-square | df | p | Monte Carlo p | Holm 보정 p | 최소 기대빈도 | Cramer's V | 판정 |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---|",
+            f"| 레벨 구간 x 후보 | {level_test['chi2']:.3f} | {level_test['dof']} | {format_p(level_test['p_value'])} | {format_p(level_test['monte_carlo_p_value'])} | {format_p(level_test['holm_adjusted_p_value'])} | {level_test['min_expected_frequency']:.2f} | {level_test['cramers_v']:.3f} | {decision(level_test)} |",
+            f"| 직업 계열 x 후보 | {class_test['chi2']:.3f} | {class_test['dof']} | {format_p(class_test['p_value'])} | {format_p(class_test['monte_carlo_p_value'])} | {format_p(class_test['holm_adjusted_p_value'])} | {class_test['min_expected_frequency']:.2f} | {class_test['cramers_v']:.3f} | {decision(class_test)} |",
+            "",
+        ]
+    )
+
+
 def build_summary(results: dict) -> str:
     primary = results["labels"][0]
-    sensitivity = results["labels"][1]
+    current = results["labels"][1]
+    high_confidence = results["labels"][2]
     primary_level, primary_class = primary["tests"]
-    sensitivity_level, sensitivity_class = sensitivity["tests"]
-    middle_band = primary_level["categories"][1]
+    top_band = max(primary_level["categories"], key=lambda row: row["candidate_rate"])
+    low_band = min(primary_level["categories"], key=lambda row: row["candidate_rate"])
 
     lines = [
-        "# H2 현재 주차 후보 분포 검정 결과",
+        "# H2 H1 후보군 분포 검정 결과",
         "",
         "## 설계",
         "",
-        "- 입력: `data/main_characters.csv`, `data/h1_current_candidates.csv`",
-        f"- 분석 표본: {primary['n']:,}명",
-        "- 기본 라벨: `is_current_parking_candidate`",
+        f"- 입력: `{results['features_input']}`, `{results['cluster_input']}`",
+        f"- 보조 입력: `{results['current_input']}`",
+        "- 기본 라벨: `is_stagnant_cluster` (H1 K-Means 성장 정체/주차 후보 cluster)",
+        "- 보조 라벨: `is_current_parking_candidate`, `is_high_confidence_candidate`",
         "- 사전 정의 범주: 레벨 `270-279 / 280-285 / 286-290`, 직업 계열 `전사 / 마법사 / 궁수 / 도적 / 해적`",
         "- 검정: 카이제곱 독립성 검정, `alpha = 0.05`; 효과크기 Cramer's V; 후보 셀 표준화 잔차",
-        f"- 보수적 점검: 고정 주변합 Monte Carlo 검정({MONTE_CARLO_ITERATIONS:,}회), 두 기본 교차표에 대한 Holm 보정, `is_high_confidence_candidate` 민감도 분석",
+        f"- 보수적 점검: 고정 주변합 Monte Carlo 검정({MONTE_CARLO_ITERATIONS:,}회), 두 기본 교차표에 대한 Holm 보정",
         "",
-        "## 기본 라벨 결과",
+        "## 기본 라벨 결과: H1 클러스터 후보",
         "",
-        f"현재 후보는 {primary['candidate_n']}명({primary['candidate_rate'] * 100:.2f}%)이다.",
+        f"H1 클러스터 후보는 {primary['candidate_n']}명({format_rate(primary['candidate_rate'])})이다. 분석 표본은 {primary['n']:,}명이다.",
         "",
-        "| 검정 | chi-square | df | p | Monte Carlo p | Holm 보정 p | 최소 기대빈도 | Cramer's V | 판정 |",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---|",
-        f"| 레벨 구간 x 후보 | {primary_level['chi2']:.3f} | {primary_level['dof']} | {format_p(primary_level['p_value'])} | {format_p(primary_level['monte_carlo_p_value'])} | {format_p(primary_level['holm_adjusted_p_value'])} | {primary_level['min_expected_frequency']:.2f} | {primary_level['cramers_v']:.3f} | 원검정 유의 |",
-        f"| 직업 계열 x 후보 | {primary_class['chi2']:.3f} | {primary_class['dof']} | {format_p(primary_class['p_value'])} | {format_p(primary_class['monte_carlo_p_value'])} | {format_p(primary_class['holm_adjusted_p_value'])} | {primary_class['min_expected_frequency']:.2f} | {primary_class['cramers_v']:.3f} | 유의하지 않음 |",
-        "",
-        "### 레벨 구간",
-        "",
-        "| 레벨 구간 | 표본 | 후보 | 후보 비율 | 후보 셀 표준화 잔차 | 나머지 대비 OR (95% CI) |",
-        "|---|---:|---:|---:|---:|---:|",
     ]
+    append_test_table(lines, primary, "H1 클러스터 후보")
+    lines.extend(
+        [
+            "### 레벨 구간",
+            "",
+            "| 레벨 구간 | 표본 | 후보 | 후보 비율 | 후보 셀 표준화 잔차 | 나머지 대비 OR (95% CI) |",
+            "|---|---:|---:|---:|---:|---:|",
+        ]
+    )
     for row in primary_level["categories"]:
         lines.append(
             f"| {row['category']} | {row['n']} | {row['candidate_n']} | "
-            f"{row['candidate_rate'] * 100:.2f}% | {row['candidate_standardized_residual']:.2f} | "
+            f"{format_rate(row['candidate_rate'])} | {row['candidate_standardized_residual']:.2f} | "
             f"{row['odds_ratio_vs_rest']:.2f} ({row['odds_ratio_ci95'][0]:.2f}-{row['odds_ratio_ci95'][1]:.2f}) |"
         )
     lines.extend(
         [
             "",
-            f"`280-285` 구간이 가장 높은 후보 비율({middle_band['candidate_rate'] * 100:.2f}%)과 "
-            f"양의 표준화 잔차({middle_band['candidate_standardized_residual']:.2f})를 보였다. "
-            f"나머지 레벨 대비 odds ratio는 {middle_band['odds_ratio_vs_rest']:.2f}이다.",
+            f"`{top_band['category']}` 구간이 가장 높은 후보 비율({format_rate(top_band['candidate_rate'])})과 "
+            f"양의 표준화 잔차({top_band['candidate_standardized_residual']:.2f})를 보였다. "
+            f"나머지 레벨 대비 odds ratio는 {top_band['odds_ratio_vs_rest']:.2f}이다. "
+            f"반대로 `{low_band['category']}` 구간은 후보 비율이 {format_rate(low_band['candidate_rate'])}로 가장 낮고, "
+            f"표준화 잔차도 {low_band['candidate_standardized_residual']:.2f}로 낮다.",
             "",
             "### 직업 계열",
             "",
@@ -239,30 +321,31 @@ def build_summary(results: dict) -> str:
     for row in primary_class["categories"]:
         lines.append(
             f"| {row['category']} | {row['n']} | {row['candidate_n']} | "
-            f"{row['candidate_rate'] * 100:.2f}% | {row['candidate_standardized_residual']:.2f} |"
+            f"{format_rate(row['candidate_rate'])} | {row['candidate_standardized_residual']:.2f} |"
         )
     lines.extend(
         [
             "",
-            "## 민감도 분석",
+            "## 보조 현재성 라벨",
             "",
-            f"고신뢰 후보는 {sensitivity['candidate_n']}명({sensitivity['candidate_rate'] * 100:.2f}%)이다.",
+            f"현재성 후보는 {current['candidate_n']}명({format_rate(current['candidate_rate'])}, 표본 {current['n']:,}명)이고, "
+            f"고신뢰 현재성 후보는 {high_confidence['candidate_n']}명({format_rate(high_confidence['candidate_rate'])}, 표본 {high_confidence['n']:,}명)이다.",
             "",
-            "| 검정 | chi-square | p | Monte Carlo p | Holm 보정 p | 최소 기대빈도 | Cramer's V |",
-            "|---|---:|---:|---:|---:|---:|---:|",
-            f"| 레벨 구간 x 고신뢰 후보 | {sensitivity_level['chi2']:.3f} | {format_p(sensitivity_level['p_value'])} | {format_p(sensitivity_level['monte_carlo_p_value'])} | {format_p(sensitivity_level['holm_adjusted_p_value'])} | {sensitivity_level['min_expected_frequency']:.2f} | {sensitivity_level['cramers_v']:.3f} |",
-            f"| 직업 계열 x 고신뢰 후보 | {sensitivity_class['chi2']:.3f} | {format_p(sensitivity_class['p_value'])} | {format_p(sensitivity_class['monte_carlo_p_value'])} | {format_p(sensitivity_class['holm_adjusted_p_value'])} | {sensitivity_class['min_expected_frequency']:.2f} | {sensitivity_class['cramers_v']:.3f} |",
-            "",
+        ]
+    )
+    append_test_table(lines, current, "현재성 후보")
+    append_test_table(lines, high_confidence, "고신뢰 현재성 후보")
+    lines.extend(
+        [
             "## 판정",
             "",
-            "사전 정의한 기본 레벨 구간 검정은 `p < 0.05`로 H2 수용 기준을 충족한다. "
-            "현재 후보는 균일하게 분포하지 않으며 `280-285` 구간에 상대적으로 집중된다. "
-            "직업 계열 집중은 확인되지 않았다.",
+            "H1 클러스터 후보 412명 기준으로 레벨 구간 분포는 Holm 보정 후에도 유의해 H2의 레벨 구간 불균형 가설을 지지한다. "
+            f"후보는 `{top_band['category']}` 구간에 강하게 집중되고 `{low_band['category']}` 구간에서는 드물다. "
+            f"레벨 효과의 Cramer's V는 {primary_level['cramers_v']:.3f}로, 63명 현재성 라벨에서 보였던 작은 효과보다 훨씬 크다.",
             "",
-            "해석은 제한적으로 유지해야 한다. 레벨 효과의 Cramer's V는 작고, 두 기본 교차표에 Holm 보정을 "
-            "적용하면 레벨 검정도 `p >= 0.05`이다. 고신뢰 라벨 분석 역시 유의하지 않다. "
-            "고신뢰 직업 교차표는 최소 기대빈도가 5보다 작아 Monte Carlo p를 우선 참고한다. "
-            "따라서 결과는 현재 표본에서의 탐색적 운영 신호이며, 독립 시점 데이터로 재검증해야 한다.",
+            "반면 직업 계열 분포는 H1 클러스터 후보, 현재성 후보, 고신뢰 현재성 후보 모두에서 유의하지 않다. "
+            "따라서 H2의 결론은 `레벨 구간 집중은 확인, 직업 계열 집중은 미확인`으로 정리한다. "
+            "이 결과는 H1 파생 후보 라벨의 분포 검정이며 실제 주차 유저 ground truth 검정은 아니다.",
             "",
             "## 재현",
             "",
@@ -283,8 +366,8 @@ def plot_rates(results: dict) -> None:
     fig, axes = plt.subplots(1, 2, figsize=(11, 4))
 
     for axis, test, title, color in [
-        (axes[0], primary_level, "Candidate rate by level band", "#4e79a7"),
-        (axes[1], primary_class, "Candidate rate by class group", "#f28e2b"),
+        (axes[0], primary_level, "H1 candidate rate by level band", "#4e79a7"),
+        (axes[1], primary_class, "H1 candidate rate by class group", "#f28e2b"),
     ]:
         categories = [row["category"] for row in test["categories"]]
         rates = [row["candidate_rate"] * 100 for row in test["categories"]]
@@ -295,14 +378,14 @@ def plot_rates(results: dict) -> None:
         for bar, rate in zip(bars, rates):
             axis.text(
                 bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 0.08,
+                bar.get_height() + 0.45,
                 f"{rate:.2f}%",
                 ha="center",
                 va="bottom",
                 fontsize=9,
             )
 
-    fig.suptitle("H2: current parking candidate distribution")
+    fig.suptitle("H2: H1 cluster candidate distribution")
     fig.tight_layout()
     FIGURE_DIR.mkdir(parents=True, exist_ok=True)
     fig.savefig(FIGURE_DIR / "candidate_distribution.png", dpi=160, bbox_inches="tight")
@@ -310,12 +393,19 @@ def plot_rates(results: dict) -> None:
 
 
 def main() -> None:
-    df = load_data()
+    parser = argparse.ArgumentParser(description="Run H2 distribution tests.")
+    parser.parse_args()
+
+    datasets, paths = load_data()
     results = {
         "alpha": ALPHA,
         "level_bins": LEVEL_LABELS,
         "class_groups": CLASS_ORDER,
-        "labels": [analyze_label(df, label, description) for label, description in LABELS],
+        **paths,
+        "labels": [
+            analyze_label(datasets[dataset_key], label, description, dataset_key)
+            for label, description, dataset_key in LABEL_SPECS
+        ],
     }
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     (OUTPUT_DIR / "results.json").write_text(
@@ -326,9 +416,9 @@ def main() -> None:
     plot_rates(results)
 
     primary_level, primary_class = results["labels"][0]["tests"]
-    print(f"sample_n={len(df)}")
-    print(f"candidate_n={int(df[LABELS[0][0]].sum())}")
-    print(f"level_band_p={primary_level['p_value']:.6f}")
+    print(f"sample_n={results['labels'][0]['n']}")
+    print(f"candidate_n={results['labels'][0]['candidate_n']}")
+    print(f"level_band_p={primary_level['p_value']:.6g}")
     print(f"class_group_p={primary_class['p_value']:.6f}")
     print(f"wrote={OUTPUT_DIR / 'RESULTS.md'}")
 

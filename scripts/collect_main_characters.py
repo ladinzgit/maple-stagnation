@@ -72,6 +72,12 @@ CREATE_CUTOFF    = "2025-06-30"
 # 계열 내 직업(job) 균형: 한 직업이 계열을 독점하지 않도록
 MIN_PER_CLASS    = 10    # Phase 1 — 가용 직업당 최소 수집 목표
 MAX_PER_CLASS    = 100   # Phase 2 — 직업당 상한 (단일 직업 독점 방지)
+SAMPLE_DESIGN    = "balanced"
+REQUIRE_RECENT_ACCESS = False
+CHECKPOINT_MONTHS = ["2025-06", "2025-12", "2026-05"]
+CHECKPOINT_DAYS = [1, 8, 15, 22]
+MIN_CHECKPOINT_MONTHS = len(CHECKPOINT_MONTHS)
+REQUIRE_CHECKPOINT_ACCESS = True
 # ─────────────────────────────────────────────────────────────────────────────
 
 CLASS_GROUP_MAP = {
@@ -348,6 +354,23 @@ def level_bin_idx(level):
     return -1
 
 
+def month_has_access(ocid, year_month):
+    """월 1/8/15/22일 중 한 번이라도 최근 7일 접속이 관측되면 True."""
+    for day in CHECKPOINT_DAYS:
+        basic = api_get("character/basic", {"ocid": ocid, "date": f"{year_month}-{day:02d}"})
+        if basic and basic.get("access_flag") == "true":
+            return True
+    return False
+
+
+def passes_checkpoint_access(ocid):
+    """큰 이벤트/현재 실험 checkpoint 월 접속 기준을 통과하는지 확인."""
+    if not REQUIRE_CHECKPOINT_ACCESS:
+        return True
+    active_months = sum(1 for ym in CHECKPOINT_MONTHS if month_has_access(ocid, ym))
+    return active_months >= MIN_CHECKPOINT_MONTHS
+
+
 def process_candidate(entry, class_name, seen_ocids, lock):
     """
     랭킹 항목 1개 처리.
@@ -385,6 +408,10 @@ def process_candidate(entry, class_name, seen_ocids, lock):
     basic = api_get("character/basic", {"ocid": ocid, "date": TARGET_DATE})
     date_create = basic.get("character_date_create") if basic else None
     if not date_create or date_create[:10] > CREATE_CUTOFF:
+        return None
+    if REQUIRE_RECENT_ACCESS and basic.get("access_flag") != "true":
+        return None
+    if not passes_checkpoint_access(ocid):
         return None
 
     raider = api_get("user/union-raider", {"ocid": ocid, "date": TARGET_DATE})
@@ -454,8 +481,15 @@ def collect_group(group_name, seen_ocids, lock):
         print(f"[{group_name}] 수집 가능 페이지 없음 — 건너뜀")
         return []
 
-    base = min(MAX_PER_CLASS, max(MIN_PER_CLASS, TARGET_PER_GROUP // len(available)))
-    print(f"  → 직업 {len(available)}개 | Phase1 직업당 {base}명 | 직업당 상한 {MAX_PER_CLASS}명")
+    no_class_cap = MAX_PER_CLASS <= 0
+    if MIN_PER_CLASS <= 0 and no_class_cap:
+        base = 0
+    else:
+        base = max(MIN_PER_CLASS, TARGET_PER_GROUP // len(available))
+        if not no_class_cap:
+            base = min(MAX_PER_CLASS, base)
+    max_label = "없음" if no_class_cap else f"{MAX_PER_CLASS}명"
+    print(f"  → 직업 {len(available)}개 | Phase1 직업당 {base}명 | 직업당 상한 {max_label}")
 
     class_counts = {c: 0 for c in available}
     bin_counts   = [0] * len(LEVEL_BINS)
@@ -487,7 +521,9 @@ def collect_group(group_name, seen_ocids, lock):
                 if r is None or total[0] >= TARGET_PER_GROUP:
                     continue
                 bi = level_bin_idx(r["level"])
-                if class_counts[cls] >= ceiling or bi < 0 or bin_counts[bi] >= BIN_TARGETS[bi]:
+                if ceiling is not None and class_counts[cls] >= ceiling:
+                    continue
+                if bi < 0 or bin_counts[bi] >= BIN_TARGETS[bi]:
                     continue
                 class_counts[cls] += 1
                 bin_counts[bi]    += 1
@@ -505,17 +541,18 @@ def collect_group(group_name, seen_ocids, lock):
             last_print[0] = now
 
     # ── Phase 1: 직업 다양성 (각 직업 base 까지) ──────────────────────
-    progress = True
-    while progress and total[0] < TARGET_PER_GROUP:
-        progress = False
-        for cls in available:
-            if total[0] >= TARGET_PER_GROUP:
-                break
-            if class_counts[cls] >= base or cursor[cls] >= len(job_pages[cls]):
-                continue
-            if process_page(cls, base):
-                progress = True
-            maybe_print()
+    if base > 0:
+        progress = True
+        while progress and total[0] < TARGET_PER_GROUP:
+            progress = False
+            for cls in available:
+                if total[0] >= TARGET_PER_GROUP:
+                    break
+                if class_counts[cls] >= base or cursor[cls] >= len(job_pages[cls]):
+                    continue
+                if process_page(cls, base):
+                    progress = True
+                maybe_print()
 
     # ── Phase 2: 목표 채움 (MAX_PER_CLASS 한도, 라운드로빈) ────────────
     progress = True
@@ -524,9 +561,11 @@ def collect_group(group_name, seen_ocids, lock):
         for cls in available:
             if total[0] >= TARGET_PER_GROUP:
                 break
-            if class_counts[cls] >= MAX_PER_CLASS or cursor[cls] >= len(job_pages[cls]):
+            if not no_class_cap and class_counts[cls] >= MAX_PER_CLASS:
                 continue
-            if process_page(cls, MAX_PER_CLASS):
+            if cursor[cls] >= len(job_pages[cls]):
+                continue
+            if process_page(cls, None if no_class_cap else MAX_PER_CLASS):
                 progress = True
             maybe_print()
 
@@ -557,6 +596,15 @@ def collect():
     total_target = len(GROUPS) * TARGET_PER_GROUP
     print(f"=== 종합 랭킹 기반 본캐 수집 ===")
     print(f"타겟: {LEVEL_MIN}~{LEVEL_MAX} | {len(GROUPS)}계열 × {TARGET_PER_GROUP}명 = {total_target}명")
+    print(f"표본 설계: {SAMPLE_DESIGN} | 직업 최소 {MIN_PER_CLASS} | 직업 상한 {MAX_PER_CLASS if MAX_PER_CLASS > 0 else '없음'}")
+    if REQUIRE_CHECKPOINT_ACCESS:
+        print(
+            "수집 단계 checkpoint 접속 필터: "
+            f"{CHECKPOINT_MONTHS} 중 {MIN_CHECKPOINT_MONTHS}개월 이상 "
+            f"(각 월 {CHECKPOINT_DAYS}일 관측)"
+        )
+    if REQUIRE_RECENT_ACCESS:
+        print("수집 단계 필터: TARGET_DATE 기준 최근 7일 접속 캐릭터만 포함")
     print(f"빈 목표(계열별): {dict(zip(BIN_LABELS, BIN_TARGETS))}")
     print(f"날짜: {TARGET_DATE} | seed: {RANDOM_SEED}\n")
 
@@ -607,5 +655,99 @@ def collect():
     print(f"  cluster × level_band   ({2 * len(LEVEL_BINS)}셀): 평균 {len(df) * 0.10 / len(LEVEL_BINS):.1f}/셀 (주차 후보)")
 
 
+def configure_from_args(args):
+    global MIN_PER_CLASS, MAX_PER_CLASS, SAMPLE_DESIGN, REQUIRE_RECENT_ACCESS
+    global CHECKPOINT_MONTHS, MIN_CHECKPOINT_MONTHS, REQUIRE_CHECKPOINT_ACCESS
+
+    SAMPLE_DESIGN = args.sample_design
+    if args.sample_design == "balanced":
+        default_min = 10
+        default_max = 100
+    elif args.sample_design == "h1-active-frame":
+        default_min = 0
+        default_max = 0
+    else:
+        raise ValueError(f"unknown sample design: {args.sample_design}")
+
+    MIN_PER_CLASS = default_min if args.min_per_class is None else args.min_per_class
+    MAX_PER_CLASS = default_max if args.max_per_class is None else args.max_per_class
+    REQUIRE_RECENT_ACCESS = args.require_recent_access
+    CHECKPOINT_MONTHS = args.checkpoint_months
+    MIN_CHECKPOINT_MONTHS = (
+        len(CHECKPOINT_MONTHS)
+        if args.min_checkpoint_months is None
+        else args.min_checkpoint_months
+    )
+    REQUIRE_CHECKPOINT_ACCESS = not args.no_require_checkpoint_access
+
+    if MIN_PER_CLASS < 0:
+        raise SystemExit("--min-per-class must be >= 0")
+    if MAX_PER_CLASS < 0:
+        raise SystemExit("--max-per-class must be >= 0")
+    if MAX_PER_CLASS and MIN_PER_CLASS > MAX_PER_CLASS:
+        raise SystemExit("--min-per-class cannot exceed --max-per-class")
+    if REQUIRE_CHECKPOINT_ACCESS:
+        if not CHECKPOINT_MONTHS:
+            raise SystemExit("--checkpoint-months must not be empty")
+        if MIN_CHECKPOINT_MONTHS < 1 or MIN_CHECKPOINT_MONTHS > len(CHECKPOINT_MONTHS):
+            raise SystemExit("--min-checkpoint-months must be between 1 and number of checkpoint months")
+
+
 if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(
+        description="종합 랭킹 기반 본캐 표본 수집"
+    )
+    parser.add_argument(
+        "--sample-design",
+        choices=["balanced", "h1-active-frame"],
+        default="balanced",
+        help=(
+            "balanced: H2/H3용 계열·직업 균형 표본; "
+            "h1-active-frame: H1용 레벨 구간 중심 표본(직업 최소/상한 기본 해제)"
+        ),
+    )
+    parser.add_argument(
+        "--min-per-class",
+        type=int,
+        default=None,
+        help="직업별 Phase1 최소 목표. 0이면 최소 목표를 해제",
+    )
+    parser.add_argument(
+        "--max-per-class",
+        type=int,
+        default=None,
+        help="직업별 수집 상한. 0이면 상한을 해제",
+    )
+    parser.add_argument(
+        "--require-recent-access",
+        action="store_true",
+        help=(
+            "TARGET_DATE character/basic access_flag=true 캐릭터만 수집. "
+            "월별 이력 기반 active sample과 다른 근사 필터"
+        ),
+    )
+    parser.add_argument(
+        "--checkpoint-months",
+        nargs="+",
+        default=CHECKPOINT_MONTHS,
+        help=(
+            "월 단위 접속 checkpoint. 기본값은 6월/12월 대형 이벤트와 "
+            "현재 실험 기준월인 2026-05"
+        ),
+    )
+    parser.add_argument(
+        "--min-checkpoint-months",
+        type=int,
+        default=None,
+        help="접속이 관측되어야 하는 checkpoint 월 수. 기본값은 checkpoint 전체 통과",
+    )
+    parser.add_argument(
+        "--no-require-checkpoint-access",
+        action="store_true",
+        help="checkpoint 접속 필터를 끄고 기존 랭킹 표본을 수집",
+    )
+    args = parser.parse_args()
+    configure_from_args(args)
     collect()

@@ -2,13 +2,13 @@
   "features": [
     "cumexp_avg",
     "union_avg",
-    "hfrag_avg"
+    "access_ratio"
   ],
-  "k": 4,
-  "silhouette": 0.643,
+  "k": 3,
+  "silhouette": 0.5446,
   "elbow_k": 4,
   "stagnant_cluster_id": 1,
   "source": "family-diverse",
-  "stagnant_n": 394,
-  "stagnant_size_pct": 20.0
+  "stagnant_n": 412,
+  "stagnant_size_pct": 20.8
 }

@@ -293,7 +293,7 @@ def compute_features(monthly_snaps):
 
     fields = [
         "level", "combat_power", "union_level",
-        "authentic_symbol_score", "hexa_level_sum",
+        "authentic_symbol_score", "hexa_level_sum", "cumexp",
     ]
     indexed = {f: [(i, s.get(f)) for i, s in valid] for f in fields}
 

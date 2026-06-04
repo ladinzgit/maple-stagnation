@@ -1,28 +1,48 @@
-# EDA 요약
+# EDA Summary
 
-## 현재 H1 입력
+This directory contains exploratory checks for the active 270-290 main-character sample.
 
-H1의 주 입력은 성장 정체를 직접 표현하는 세 피처다.
+## Current Sample
 
-| 피처 | 역할 |
+The current collection is filtered in `scripts/collect_main_characters.py`.
+
+- checkpoint months: `2025-06`, `2025-12`, `2026-05`
+- active condition: access observed in all three checkpoint months
+- final sample: 2,000 characters
+- level bands: 665 / 665 / 670 for `270-279`, `280-285`, `286-290`
+- class groups: 400 each
+
+## Current Feature Profile
+
+Run:
+
+```bash
+python eda/profile_active_features.py
+```
+
+Outputs:
+
+- `eda/ACTIVE_FEATURE_PROFILE.md`
+- `eda/active_feature_summary.csv`
+- `eda/figures/active_h1_feature_distributions.png`
+- `eda/figures/active_support_feature_distributions.png`
+
+The profiler filters feature tables to the current `data/main_characters.csv` OCID set before summarizing.
+
+## Current H1 Features
+
+The final H1 feature aliases are:
+
+| Alias | Concrete feature |
 |---|---|
-| `log1p_avg_monthly_delta_cumexp` | 레벨 편향을 줄인 경험치 성장량 |
-| `avg_monthly_delta_union_level` | 계정 성장량 |
-| `avg_monthly_delta_hexa_frag` | HEXA 조각 소비 성장량 |
+| `cumexp_avg` | `log1p_avg_monthly_delta_cumexp` |
+| `union_avg` | `avg_monthly_delta_union_level`, clipped `[0, p99]` |
+| `access_ratio` | monthly access ratio |
 
-전투력과 어센틱심볼은 보조 EDA 및 민감도 분석에만 사용한다.
+Support/diagnostic features include level, combat power, authentic symbol, HEXA core growth, HEXA fragment growth, access activity, and character age.
 
-## 접속 행동 보완
+## Notes
 
-기존 월 1회 접속 관측은 활동성을 과소 측정했다. `character/basic`을 월 `1, 8, 15, 22일`에
-조회하도록 수집기를 수정했다.
-
-- 원시 이력: `access_active_weeks`, `access_observed_weeks`
-- 월별 활동: 월내 한 번이라도 접속이 관측되면 `access_flag=1`
-- 전체 요약: `access_active_months`, `access_ratio`, `access_recent`
-
-## 해석 제한
-
-성장 정체 군집은 주차 후보 확정 라벨이 아니다. 미접속 캐릭터가 포함되므로 시간 분할 검증에서
-반복 접속 조건을 추가해야 한다. 현재 결과는 `h1_clustering/README.md`와
-`h1_clustering/temporal_external_validation.ipynb`를 기준으로 해석한다.
+- `avg_monthly_delta_combat_power` is heavy-tailed and can be negative because monthly stat snapshots are noisy; use p01-p99 winsorization before modeling when included.
+- Nonnegative growth deltas are clipped at lower 0 and upper p99 in the H1 feature selection workflow.
+- Access features are still informative because collection requires activity only at three checkpoint months, not continuous activity across all months.
