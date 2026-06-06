@@ -13,7 +13,7 @@ v2.1 추가 (EDA 후속, 라이브 검증 완료):
 v2.2 추가 (age 교란 제거 — 신규 클래스 렌 포함 유지하며 편향 완화):
   - recent{3,6}_delta_*: 최근 3·6개월 기울기. 12개월 delta는 6월 생성 신규캐(렌 등)를
       항상 '활성'으로 강제 분류 → 캐릭터 연령(age) 교란. 최근-구간 기울기는 연령과 무관하게
-      '현재 주차 후보'을 정의 → H1 클러스터링 / H2 class_group 분포 편향 동시 제거. (추가 호출 0)
+      H1 성장 정체 후보 라벨 생성 / H2 직업 계열 분포 검정의 표본 편향 동시 제거. (추가 호출 0)
   - character_age_months / created_in_window: 편향 진단·민감도 분석용. cutoff(2025-06-30)는
       유지(렌=현 직업분포 1위, 대표성). created_in_window 제외 재실행 = 강건성 체크.
 
@@ -76,7 +76,7 @@ for _ in range(SNAPSHOT_MONTHS):
         _y -= 1
 MONTHS.reverse()   # 오래된 → 최신
 
-# 최근-구간 기울기 창: age(캐릭터 연령) 교란 제거용 '현재 주차 후보' 신호 (추가 API 호출 0)
+# 최근-구간 기울기 창: age(캐릭터 연령) 교란 제거용 H1 성장 정체 후보 신호 (추가 API 호출 0)
 RECENT_WINDOWS = [3, 6]   # 최근 3·6개월 두 창 모두 산출 → EDA에서 Feature Set 선택
 
 # delta 필드명 → 컬럼 접미사 (12mo avg_monthly_delta_* 명명과 일치)
@@ -310,7 +310,7 @@ def compute_features(monthly_snaps):
         if access_observed_weeks else None
     )
 
-    # ── 최근-구간 기울기 (age 불변 '현재 주차 후보' 신호; 추가 API 호출 0) ──────────
+    # ── 최근-구간 기울기 (age 불변 H1 성장 정체 후보 신호; 추가 API 호출 0) ──────────
     # 최근 w개월 = 월 인덱스 ≥ (전체 개월 수 - w). 유효값 <2 면 avg_monthly_delta 가 None 반환.
     n_months = len(MONTHS)
     recent = {

@@ -12,12 +12,12 @@ API 흐름: ranking/overall → id → character/basic(생성일 필터) → use
 신규 캐릭 필터: character_date_create > CREATE_CUTOFF 이면 제외 (12개월 윈도우 관측 불가 캐릭 배제)
 
 가설별 설계 근거:
-  - 레벨 270~290 제한 (H1): 270~290 이 주차 후보 신호 구간; 저레벨대 정체 신호 + 고레벨(286~290) active 대조군
+  - 레벨 270~290 제한 (H1/H2): 성장 정체 후보 신호 구간과 고레벨(286~290) active 대조군 확보
   - 5계열 × 400명 = 2,000명 (H3): 주차 후보 비율 ~10% 가정 시 ~200 minority class →
-                                    5-fold CV per fold ~40 → RF/XGBoost cross-fold variance 안정,
-                                    Precision 95% CI ±2~3% 로 수용 기준(>0.95) 판정 가능
-  - 5계열 균등 (H2): cluster × class_group Chi-Square 셀별 기대 빈도 ≥ 5 확보
-  - 3 level_bin × 균등 (H2): cluster × level_band Chi-Square 셀별 기대 빈도 확보
+                                    5-fold CV per fold ~40 → RF cross-fold variance 안정,
+                                    rule threshold 판정 표본 확보
+  - 5계열 균등 (H2): H1 후보군 비율이 직업 계열별로 불균일한지 검정할 때 셀별 기대 빈도 ≥ 5 확보
+  - 자연 레벨분포 유지 (H2): H1 후보군 비율이 레벨 구간별로 불균일한지 실제 표본 구조 기준으로 검정
   - 본캐 필터 (H1/H3): 부캐 성장 정체는 본캐 활동의 부산물 → 노이즈 제거
   - world_type=0 (All): 리부트는 메소 거래 불가 → 주차 후보 인센티브 자체가 다름
 
@@ -56,7 +56,7 @@ OUTPUT_FILE      = str(Path(__file__).resolve().parent.parent / "data" / "main_c
 LEVEL_MIN        = 270
 LEVEL_MAX        = 290
 GROUPS           = ["전사", "마법사", "궁수", "도적", "해적"]
-TARGET_PER_GROUP = 400   # 5계열 × 400 = 2,000명 (H3 supervised CV/Rule threshold 통계 안정성 확보)
+TARGET_PER_GROUP = 400   # 5계열 × 400 = 2,000명 (H3 CV/rule threshold 통계 안정성 확보)
 # hi 는 exclusive: (270,280)=270~279, (280,286)=280~285, (286,291)=286~290
 LEVEL_BINS       = [(270, 280), (280, 286), (286, 291)]
 BIN_LABELS       = ["270~279", "280~285", "286~290"]
@@ -74,6 +74,16 @@ MIN_PER_CLASS    = 10    # Phase 1 — 가용 직업당 최소 수집 목표
 MAX_PER_CLASS    = 100   # Phase 2 — 직업당 상한 (단일 직업 독점 방지)
 SAMPLE_DESIGN    = "balanced"
 REQUIRE_RECENT_ACCESS = False
+
+# 전투력 하한 필터 (재설계 2026-06-05) — 보스 farming 가능 = 주차 능력 전제조건.
+#   측정: 마지막월(END_YEAR_MONTH) 1~7일 character/stat 의 max(전투력)
+#         → collect_features 의 combat_power 정의(월 7일 max)와 동일 → 수집필터/피처 일관.
+#   cp≥50M: 메이플 유저 통용 주차 구간(~5천만). H1 군집 정합(sil 0.67)·약캐 방치 confound 제거.
+MIN_COMBAT_POWER     = 50_000_000
+REQUIRE_COMBAT_POWER = True
+# cp≥50M 모집단은 저레벨(270~279)이 게임 전체에서 희소(~13%) → 레벨빈 균등 불가/역편향 →
+#   레벨빈 소프트캡 해제, 자연 레벨분포로 수집(계열만 균형). H2 레벨검정도 자연분포 기준.
+REQUIRE_LEVEL_BINS   = False
 
 # 접속 통제변인 (재설계 2026-06): 관측 12개월(2025-06~2026-05) 중 10개월 이상 접속 요구.
 #   → 표본 전체를 '활발히 접속' 상태로 균일화 → 접속이 클러스터 교란/축이 되지 못하게 통제.
@@ -104,6 +114,9 @@ REQUIRE_CHECKPOINT_ACCESS = True
 # 스냅샷 레벨 in-range 가드: features 최신 스냅샷 기준일(END_YEAR_MONTH-01)에서도 270~290 인지
 #   확인 → 랭킹(TARGET_DATE) 레벨과 스냅샷 레벨 불일치로 인한 <270 누수(20명) 차단.
 SNAPSHOT_END_DATE = f"{END_YEAR_MONTH}-01"
+# 레벨빈 해제 시 소프트캡을 무력화(각 빈이 계열 목표 전체를 수용) → 자연 레벨분포 수집.
+if not REQUIRE_LEVEL_BINS:
+    BIN_TARGETS = [TARGET_PER_GROUP] * len(LEVEL_BINS)
 # ─────────────────────────────────────────────────────────────────────────────
 
 CLASS_GROUP_MAP = {
@@ -380,6 +393,25 @@ def level_bin_idx(level):
     return -1
 
 
+def last_month_max_cp(ocid):
+    """END_YEAR_MONTH 월 1~7일 character/stat 의 max(전투력).
+    collect_features 의 combat_power 정의(월 7일 max)와 동일 → 수집필터/피처 일관."""
+    ey, em = map(int, END_YEAR_MONTH.split("-"))
+    cp_values = []
+    for day in range(1, 8):
+        d = f"{ey:04d}-{em:02d}-{day:02d}"
+        stat = api_get("character/stat", {"ocid": ocid, "date": d})
+        if not stat:
+            continue
+        for s in stat.get("final_stat", []):
+            if s.get("stat_name") == "전투력":
+                try:
+                    cp_values.append(int(str(s.get("stat_value", "0")).replace(",", "")))
+                except (ValueError, TypeError):
+                    pass
+    return max(cp_values) if cp_values else None
+
+
 def month_has_access(ocid, year_month):
     """월 1/8/15/22일 중 한 번이라도 최근 7일 접속이 관측되면 True."""
     for day in CHECKPOINT_DAYS:
@@ -466,7 +498,15 @@ def process_candidate(entry, class_name, seen_ocids, lock):
     if max_block_lv > char_level:
         return None    # 더 높은 레벨 캐릭터 존재 → 부캐
 
-    # 접속 통제(≥10/12) 필터는 가장 비싼 단계 → 본캐 확정 후 마지막에 (조기종료 적용)
+    # 전투력 하한 필터 (본캐 확정 후·접속 probe 前): fixed 7콜로 ~45% 조기 탈락 →
+    #   가장 비싼 접속 probe(≥10/12)를 capable 후보에만 수행 → 호출 절감.
+    combat_power_latest = None
+    if REQUIRE_COMBAT_POWER:
+        combat_power_latest = last_month_max_cp(ocid)
+        if combat_power_latest is None or combat_power_latest < MIN_COMBAT_POWER:
+            return None
+
+    # 접속 통제(≥10/12) 필터는 가장 비싼 단계 → 본캐·전투력 확정 후 마지막에 (조기종료 적용)
     if not passes_checkpoint_access(ocid):
         return None
 
@@ -477,6 +517,7 @@ def process_candidate(entry, class_name, seen_ocids, lock):
         "character_class":      class_name,
         "world_name":           world_name,
         "union_level":          union_lv,
+        "combat_power_latest":  combat_power_latest,   # 마지막월 7일 max(전투력); 필터 기준값
         "class_group":          CLASS_GROUP_MAP[class_name],
         "character_date_create": date_create[:10],
     }
@@ -652,6 +693,9 @@ def collect():
     print(f"=== 종합 랭킹 기반 본캐 수집 ===")
     print(f"타겟: {LEVEL_MIN}~{LEVEL_MAX} | {len(GROUPS)}계열 × {TARGET_PER_GROUP}명 = {total_target}명")
     print(f"표본 설계: {SAMPLE_DESIGN} | 직업 최소 {MIN_PER_CLASS} | 직업 상한 {MAX_PER_CLASS if MAX_PER_CLASS > 0 else '없음'}")
+    if REQUIRE_COMBAT_POWER:
+        print(f"전투력 하한 필터: 마지막월({END_YEAR_MONTH}) 7일 max(전투력) ≥ {MIN_COMBAT_POWER:,}")
+    print(f"레벨빈 균등: {'ON' if REQUIRE_LEVEL_BINS else 'OFF (자연 레벨분포)'}")
     if REQUIRE_CHECKPOINT_ACCESS:
         print(
             "수집 단계 checkpoint 접속 필터: "
@@ -724,6 +768,14 @@ def collect():
 def configure_from_args(args):
     global MIN_PER_CLASS, MAX_PER_CLASS, SAMPLE_DESIGN, REQUIRE_RECENT_ACCESS
     global CHECKPOINT_MONTHS, MIN_CHECKPOINT_MONTHS, REQUIRE_CHECKPOINT_ACCESS
+    global MIN_COMBAT_POWER, REQUIRE_COMBAT_POWER, REQUIRE_LEVEL_BINS, BIN_TARGETS
+
+    REQUIRE_COMBAT_POWER = not args.no_require_combat_power
+    if args.min_combat_power is not None:
+        MIN_COMBAT_POWER = args.min_combat_power
+    REQUIRE_LEVEL_BINS = args.require_level_bins
+    if not REQUIRE_LEVEL_BINS:
+        BIN_TARGETS = [TARGET_PER_GROUP] * len(LEVEL_BINS)
 
     SAMPLE_DESIGN = args.sample_design
     if args.sample_design == "balanced":
@@ -785,6 +837,22 @@ if __name__ == "__main__":
         type=int,
         default=None,
         help="직업별 수집 상한. 0이면 상한을 해제",
+    )
+    parser.add_argument(
+        "--min-combat-power",
+        type=int,
+        default=None,
+        help="전투력 하한(마지막월 7일 max). 기본 50,000,000",
+    )
+    parser.add_argument(
+        "--no-require-combat-power",
+        action="store_true",
+        help="전투력 하한 필터 해제 (구 설계: 전 cp 수집)",
+    )
+    parser.add_argument(
+        "--require-level-bins",
+        action="store_true",
+        help="레벨빈 균등(소프트캡) 재활성. 기본은 해제(자연 레벨분포)",
     )
     parser.add_argument(
         "--require-recent-access",

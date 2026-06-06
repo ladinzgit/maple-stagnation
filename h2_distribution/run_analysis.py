@@ -29,29 +29,25 @@ LEVEL_LABELS = ["270-279", "280-285", "286-290"]
 CLASS_ORDER = ["전사", "마법사", "궁수", "도적", "해적"]
 LABEL_SPECS = [
     ("is_stagnant_cluster", "H1 클러스터 후보", "cluster"),
-    ("is_current_parking_candidate", "현재성 후보", "current"),
-    ("is_high_confidence_candidate", "고신뢰 현재성 후보", "current"),
 ]
 ALPHA = 0.05
 MONTE_CARLO_ITERATIONS = 100_000
 RANDOM_SEED = 42
 
 
-def input_paths() -> tuple[Path, Path, Path]:
+def input_paths() -> tuple[Path, Path]:
     return (
         DATA_DIR / "features_monthly.csv",
         DATA_DIR / "cluster_labels.csv",
-        DATA_DIR / "h1_current_candidates.csv",
     )
 
 
 def load_data() -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
-    features_path, cluster_path, current_path = input_paths()
+    features_path, cluster_path = input_paths()
     features = pd.read_csv(features_path, encoding="utf-8-sig")
     cluster_labels = pd.read_csv(cluster_path, encoding="utf-8-sig")
-    current_labels = pd.read_csv(current_path, encoding="utf-8-sig")
 
-    for frame in (features, cluster_labels, current_labels):
+    for frame in (features, cluster_labels):
         frame["ocid"] = frame["ocid"].astype(str)
 
     if "class_group" not in features.columns:
@@ -64,27 +60,13 @@ def load_data() -> tuple[dict[str, pd.DataFrame], dict[str, str]]:
         how="inner",
         validate="one_to_one",
     )
-    current_df = features[base_columns].merge(
-        current_labels[
-            [
-                "ocid",
-                "is_current_parking_candidate",
-                "is_high_confidence_candidate",
-            ]
-        ],
-        on="ocid",
-        how="inner",
-        validate="one_to_one",
-    )
 
     datasets = {
         "cluster": add_level_band(cluster_df),
-        "current": add_level_band(current_df),
     }
     paths = {
         "features_input": str(features_path.relative_to(ROOT)).replace("\\", "/"),
         "cluster_input": str(cluster_path.relative_to(ROOT)).replace("\\", "/"),
-        "current_input": str(current_path.relative_to(ROOT)).replace("\\", "/"),
     }
     return datasets, paths
 
@@ -247,6 +229,10 @@ def decision(test: dict) -> str:
     return "유의" if test["holm_adjusted_p_value"] < ALPHA else "유의하지 않음"
 
 
+def connective_decision(test: dict) -> str:
+    return "유의하나" if test["holm_adjusted_p_value"] < ALPHA else "유의하지 않으나"
+
+
 def append_test_table(lines: list[str], label_result: dict, title_prefix: str) -> None:
     level_test, class_test = label_result["tests"]
     lines.extend(
@@ -264,11 +250,10 @@ def append_test_table(lines: list[str], label_result: dict, title_prefix: str) -
 
 def build_summary(results: dict) -> str:
     primary = results["labels"][0]
-    current = results["labels"][1]
-    high_confidence = results["labels"][2]
     primary_level, primary_class = primary["tests"]
-    top_band = max(primary_level["categories"], key=lambda row: row["candidate_rate"])
-    low_band = min(primary_level["categories"], key=lambda row: row["candidate_rate"])
+    # 집중/희박 구간은 표준화 잔차(카이제곱 기여) 기준으로 선택 — 소표본 고비율 구간의 오해 방지
+    top_band = max(primary_level["categories"], key=lambda row: row["candidate_standardized_residual"])
+    low_band = min(primary_level["categories"], key=lambda row: row["candidate_standardized_residual"])
 
     lines = [
         "# H2 H1 후보군 분포 검정 결과",
@@ -276,9 +261,8 @@ def build_summary(results: dict) -> str:
         "## 설계",
         "",
         f"- 입력: `{results['features_input']}`, `{results['cluster_input']}`",
-        f"- 보조 입력: `{results['current_input']}`",
-        "- 기본 라벨: `is_stagnant_cluster` (H1 K-Means 성장 정체/주차 후보 cluster)",
-        "- 보조 라벨: `is_current_parking_candidate`, `is_high_confidence_candidate`",
+        "- 라벨: `is_stagnant_cluster` (H1 6mo·4피처·k=4 성장 정체/주차 후보 cluster, 380명)",
+        "- H2 가설: H1에서 도출한 성장 정체 후보군의 비율은 캐릭터 속성인 레벨 구간 및 직업 계열에 따라 불균일하게 분포할 것이다.",
         "- 사전 정의 범주: 레벨 `270-279 / 280-285 / 286-290`, 직업 계열 `전사 / 마법사 / 궁수 / 도적 / 해적`",
         "- 검정: 카이제곱 독립성 검정, `alpha = 0.05`; 효과크기 Cramer's V; 후보 셀 표준화 잔차",
         f"- 보수적 점검: 고정 주변합 Monte Carlo 검정({MONTE_CARLO_ITERATIONS:,}회), 두 기본 교차표에 대한 Holm 보정",
@@ -306,11 +290,11 @@ def build_summary(results: dict) -> str:
     lines.extend(
         [
             "",
-            f"`{top_band['category']}` 구간이 가장 높은 후보 비율({format_rate(top_band['candidate_rate'])})과 "
-            f"양의 표준화 잔차({top_band['candidate_standardized_residual']:.2f})를 보였다. "
+            f"`{top_band['category']}` 구간이 가장 강한 양의 표준화 잔차({top_band['candidate_standardized_residual']:.2f})와 "
+            f"높은 후보 비율({format_rate(top_band['candidate_rate'])})을 보였다. "
             f"나머지 레벨 대비 odds ratio는 {top_band['odds_ratio_vs_rest']:.2f}이다. "
-            f"반대로 `{low_band['category']}` 구간은 후보 비율이 {format_rate(low_band['candidate_rate'])}로 가장 낮고, "
-            f"표준화 잔차도 {low_band['candidate_standardized_residual']:.2f}로 낮다.",
+            f"반대로 `{low_band['category']}` 구간은 표준화 잔차가 {low_band['candidate_standardized_residual']:.2f}로 가장 낮고, "
+            f"후보 비율도 {format_rate(low_band['candidate_rate'])}로 가장 낮다.",
             "",
             "### 직업 계열",
             "",
@@ -326,26 +310,27 @@ def build_summary(results: dict) -> str:
     lines.extend(
         [
             "",
-            "## 보조 현재성 라벨",
-            "",
-            f"현재성 후보는 {current['candidate_n']}명({format_rate(current['candidate_rate'])}, 표본 {current['n']:,}명)이고, "
-            f"고신뢰 현재성 후보는 {high_confidence['candidate_n']}명({format_rate(high_confidence['candidate_rate'])}, 표본 {high_confidence['n']:,}명)이다.",
-            "",
-        ]
-    )
-    append_test_table(lines, current, "현재성 후보")
-    append_test_table(lines, high_confidence, "고신뢰 현재성 후보")
-    lines.extend(
-        [
             "## 판정",
             "",
             f"H1 클러스터 후보 {primary['candidate_n']}명 기준으로 레벨 구간 분포는 Holm 보정 후에도 {decision(primary_level)}하다(p={format_p(primary_level['holm_adjusted_p_value'])}, Cramer's V={primary_level['cramers_v']:.3f}). "
-            f"후보는 `{top_band['category']}` 구간에 집중되고(비율 {format_rate(top_band['candidate_rate'])}) `{low_band['category']}` 구간에서는 낮다(비율 {format_rate(low_band['candidate_rate'])}). H2의 레벨 구간 불균형 가설을 지지한다.",
+            f"후보는 `{top_band['category']}` 구간에 집중되고(표준화 잔차 {top_band['candidate_standardized_residual']:.2f}, 비율 {format_rate(top_band['candidate_rate'])}) `{low_band['category']}` 구간에서는 희박하다(표준화 잔차 {low_band['candidate_standardized_residual']:.2f}, 비율 {format_rate(low_band['candidate_rate'])}). "
+            f"따라서 H2는 **레벨 구간 측면에서 지지된다**(조작적 정의 = H1 성장 정체 후보 라벨 기준). 다만 검정 대상이 실제 주차 유저 ground truth가 아니라 H1 후보 라벨이므로, 실제 주차 유저 분포로의 일반화는 라벨 타당성을 전제로 한다.",
             "",
-            (f"직업 계열 분포는 Holm 보정 p={format_p(primary_class['holm_adjusted_p_value'])}로 {decision(primary_class)}하나, "
+            (f"직업 계열 분포는 Holm 보정 p={format_p(primary_class['holm_adjusted_p_value'])}로 {connective_decision(primary_class)}, "
              f"Cramer's V={primary_class['cramers_v']:.3f}로 효과크기는 무시할 수준이다(대표본 χ² 민감도). "
-             "따라서 H2 결론은 `레벨 구간 집중은 확인(작은~중간 효과), 직업 계열은 실질적 집중 없음(효과크기 무시 가능)`으로 정리한다. "
+             "따라서 H2 결론은 `레벨 구간 측면은 지지, 직업 계열 측면은 미지지`인 **부분 지지**로 정리한다. "
              "이 결과는 H1 파생 후보 라벨의 분포 검정이며 실제 주차 유저 ground truth 검정은 아니다."),
+            "",
+            "## 일반화 주의 (표본 설계)",
+            "",
+            (f"표본은 **270–290 본캐 + 12개월 중 ≥10개월 접속 통제(`MIN_CHECKPOINT_MONTHS=10`) + 전투력 자연 하한 ~50M**(레벨 270+ 엔드게임)을 통과한 "
+             "**active/capable 캐릭터**다. 휴면·저전투력·저레벨 캐릭터는 표본에 없다. 따라서 위 분포 결론은 **이 표본 설계 안에서만 일반화**되며, "
+             "휴면·저레벨을 포함한 전체 메이플 모집단으로 외삽하지 않는다."),
+            "",
+            (f"또한 레벨 구간 표본 크기가 크게 불균형하다("
+             + ", ".join(f"{row['category']} {row['n']}명" for row in primary_level["categories"])
+             + "). 특히 `270-279`는 소표본이라 비율·OR 추정이 불안정하다(OR 95% CI가 1을 포함 → 단독 유의성 없음). "
+             "유의한 집중 신호는 대표본인 `280-285`의 양의 표준화 잔차이며, **저레벨(270-279) 구간 해석은 보수적으로** 둔다."),
             "",
             "## 재현",
             "",
