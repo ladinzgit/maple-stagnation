@@ -5,7 +5,7 @@
 This repository is a Python and Jupyter analysis project for detecting MapleStory parking candidates from Nexon OpenAPI data.
 
 - `scripts/`: API-backed data collectors. Run these in order when rebuilding datasets.
-- `eda/`: exploratory notebook, exported Markdown, and generated figures.
+- `eda/`: exploratory notebook (`eda.ipynb`) — feature quality, access quality, interpretation.
 - `h1_clustering/`: feature selection, clustering, and temporal validation notebooks plus committed analysis figures.
 - `h2_distribution/` and `h3_rule/`: hypothesis-specific design notes; add notebooks and outputs here as those analyses are implemented.
 - `docs/`: project design, collection plan, and reference data.
