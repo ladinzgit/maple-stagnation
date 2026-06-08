@@ -1,5 +1,6 @@
 # Claude Code 내부 설정
 .claude/
+_workspace/
 
 # API 키
 .env
@@ -9,6 +10,9 @@ main_characters.csv
 features_monthly.csv
 test_main_characters.csv
 *.csv
+submission.txt
+docs/problem.md
+assets/references/
 
 # Python
 __pycache__/

@@ -170,6 +170,7 @@ def analyze_dimension(
                 "category": category,
                 "n": int(table.loc[category].sum()),
                 "candidate_n": candidate,
+                "candidate_expected": float(expected[index, 1]),
                 "candidate_rate": float(rates.loc[category]),
                 "candidate_standardized_residual": float(residuals[index, 1]),
                 "odds_ratio_vs_rest": float(odds_ratio),
@@ -198,6 +199,38 @@ def analyze_dimension(
     }
 
 
+def analyze_class_within_level(df: pd.DataFrame, label: str) -> list[dict]:
+    """레벨 통제: 레벨 구간별로 직업 계열 x 후보 카이제곱 검정을 분리 수행.
+
+    직업 계열의 marginal 무유의가 레벨 구간 불균형에 가려진 것인지 점검한다.
+    각 층의 표본·기대빈도가 작아질 수 있어, 근사 카이제곱과 함께 주변합을
+    고정한 Monte Carlo p-value를 함께 보고한다(소표본 보수 점검).
+    """
+    results = []
+    for band in LEVEL_LABELS:
+        sub = df[df["level_band"] == band]
+        table = pd.crosstab(sub["class_group"], sub[label]).reindex(
+            index=CLASS_ORDER,
+            columns=[False, True],
+            fill_value=0,
+        )
+        chi2, p_value, dof, expected = chi2_contingency(table)
+        results.append(
+            {
+                "level_band": band,
+                "n": int(table.to_numpy().sum()),
+                "candidate_n": int(table[True].sum()),
+                "chi2": float(chi2),
+                "dof": int(dof),
+                "p_value": float(p_value),
+                "monte_carlo_p_value": monte_carlo_chi_square_p(table, chi2),
+                "min_expected_frequency": float(expected.min()),
+                "cramers_v": float(cramers_v(table, chi2)),
+            }
+        )
+    return results
+
+
 def analyze_label(df: pd.DataFrame, label: str, description: str, dataset: str) -> dict:
     tests = [
         analyze_dimension(df, label, "level_band", LEVEL_LABELS),
@@ -214,6 +247,7 @@ def analyze_label(df: pd.DataFrame, label: str, description: str, dataset: str) 
         "candidate_n": int(df[label].sum()),
         "candidate_rate": float(df[label].mean()),
         "tests": tests,
+        "class_within_level": analyze_class_within_level(df, label),
     }
 
 
@@ -264,8 +298,9 @@ def build_summary(results: dict) -> str:
         "- 라벨: `is_stagnant_cluster` (H1 6mo·4피처·k=4 성장 정체/주차 후보 cluster, 380명)",
         "- H2 가설: H1에서 도출한 성장 정체 후보군의 비율은 캐릭터 속성인 레벨 구간 및 직업 계열에 따라 불균일하게 분포할 것이다.",
         "- 사전 정의 범주: 레벨 `270-279 / 280-285 / 286-290`, 직업 계열 `전사 / 마법사 / 궁수 / 도적 / 해적`",
-        "- 검정: 카이제곱 독립성 검정, `alpha = 0.05`; 효과크기 Cramer's V; 후보 셀 표준화 잔차",
+        "- 검정: 카이제곱 독립성 검정, `alpha = 0.05`; 효과크기 Cramer's V; 후보 셀 표준화 잔차(관측·기대 빈도 병기)",
         f"- 보수적 점검: 고정 주변합 Monte Carlo 검정({MONTE_CARLO_ITERATIONS:,}회), 두 기본 교차표에 대한 Holm 보정",
+        "- 레벨 통제: 레벨 구간별로 직업 계열 × 후보를 분리 검정해, 직업 무유의가 레벨 불균형에 가려진 것인지 점검",
         "",
         "## 기본 라벨 결과: H1 클러스터 후보",
         "",
@@ -277,13 +312,13 @@ def build_summary(results: dict) -> str:
         [
             "### 레벨 구간",
             "",
-            "| 레벨 구간 | 표본 | 후보 | 후보 비율 | 후보 셀 표준화 잔차 | 나머지 대비 OR (95% CI) |",
-            "|---|---:|---:|---:|---:|---:|",
+            "| 레벨 구간 | 표본 | 후보(관측) | 후보(기대) | 후보 비율 | 후보 셀 표준화 잔차 | 나머지 대비 OR (95% CI) |",
+            "|---|---:|---:|---:|---:|---:|---:|",
         ]
     )
     for row in primary_level["categories"]:
         lines.append(
-            f"| {row['category']} | {row['n']} | {row['candidate_n']} | "
+            f"| {row['category']} | {row['n']} | {row['candidate_n']} | {row['candidate_expected']:.1f} | "
             f"{format_rate(row['candidate_rate'])} | {row['candidate_standardized_residual']:.2f} | "
             f"{row['odds_ratio_vs_rest']:.2f} ({row['odds_ratio_ci95'][0]:.2f}-{row['odds_ratio_ci95'][1]:.2f}) |"
         )
@@ -307,6 +342,42 @@ def build_summary(results: dict) -> str:
             f"| {row['category']} | {row['n']} | {row['candidate_n']} | "
             f"{format_rate(row['candidate_rate'])} | {row['candidate_standardized_residual']:.2f} |"
         )
+
+    cwl = primary["class_within_level"]
+    lines.extend(
+        [
+            "",
+            "### 레벨 통제: 레벨 구간별 직업 계열 검정",
+            "",
+            "레벨 구간이 후보 분포를 주도하므로, 직업 계열의 marginal 무유의가 레벨 불균형에 가려진 결과일 "
+            "가능성을 배제하기 위해 각 레벨 구간 안에서 직업 계열 × 후보를 분리 검정했다.",
+            "",
+            "| 레벨 구간 | 표본 | 후보 | chi-square | df | p | Monte Carlo p | 최소 기대빈도 | Cramer's V | 판정 |",
+            "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        ]
+    )
+    for row in cwl:
+        verdict = "유의" if row["p_value"] < ALPHA else "유의하지 않음"
+        lines.append(
+            f"| {row['level_band']} | {row['n']} | {row['candidate_n']} | {row['chi2']:.3f} | {row['dof']} | "
+            f"{format_p(row['p_value'])} | {format_p(row['monte_carlo_p_value'])} | {row['min_expected_frequency']:.2f} | "
+            f"{row['cramers_v']:.3f} | {verdict} |"
+        )
+    sig_bands = [row["level_band"] for row in cwl if row["p_value"] < ALPHA]
+    cwl_summary = (
+        "세 레벨 구간 모두에서 직업 계열 × 후보는 유의하지 않았다"
+        if not sig_bands
+        else f"레벨 구간 {', '.join(sig_bands)}에서 직업 계열 × 후보가 유의했다"
+    )
+    lines.extend(
+        [
+            "",
+            f"{cwl_summary}. 따라서 직업 계열 무유의는 레벨 구간 불균형에 의한 교란이 아니라, "
+            "레벨을 통제한 뒤에도 유지되는 결과로 해석된다. 다만 소표본 구간(270-279)은 기대빈도가 작아 "
+            "근사 카이제곱이 불안정하므로 Monte Carlo p를 함께 본다.",
+        ]
+    )
+
     lines.extend(
         [
             "",
@@ -318,6 +389,7 @@ def build_summary(results: dict) -> str:
             "",
             (f"직업 계열 분포는 Holm 보정 p={format_p(primary_class['holm_adjusted_p_value'])}로 {connective_decision(primary_class)}, "
              f"Cramer's V={primary_class['cramers_v']:.3f}로 효과크기는 무시할 수준이다(대표본 χ² 민감도). "
+             "이 무유의는 레벨 구간별 분리 검정에서도 동일하게 유지되어(레벨 통제 후에도 직업 효과 없음), 레벨 불균형의 산물이 아님을 확인했다. "
              "따라서 H2 결론은 `레벨 구간 측면은 지지, 직업 계열 측면은 미지지`인 **부분 지지**로 정리한다. "
              "이 결과는 H1 파생 후보 라벨의 분포 검정이며 실제 주차 유저 ground truth 검정은 아니다."),
             "",
