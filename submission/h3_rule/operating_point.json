@@ -1,0 +1,6 @@
+{
+  "CUM_T": 30.84,
+  "T_OP": 70000000,
+  "TARGET_FPR": 0.1,
+  "rule": "log1p_recent3_delta_cumexp<=30.84 AND combat_power_latest<=70000000 AND access_active_months>=2"
+}

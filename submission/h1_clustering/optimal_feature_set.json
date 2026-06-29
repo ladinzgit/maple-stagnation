@@ -1,0 +1,25 @@
+{
+  "features": [
+    "cp_slog",
+    "hexa_avg",
+    "union_log",
+    "auth_log"
+  ],
+  "k": 4,
+  "silhouette": 0.3569,
+  "best_sil_k": 6,
+  "best_silhouette": 0.3835,
+  "elbow_k": 4,
+  "window": [
+    "2025-12",
+    "2026-01",
+    "2026-02",
+    "2026-03",
+    "2026-04",
+    "2026-05"
+  ],
+  "stagnant_cluster_id": 1,
+  "source": "4-system family-diverse (user-pinned, 6mo)",
+  "stagnant_n": 380,
+  "stagnant_size_pct": 19.0
+}
